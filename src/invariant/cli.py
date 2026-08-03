@@ -1,0 +1,281 @@
+"""
+Invariant -- SMT-based guardrail SAST.
+
+Two subcommands, sharing the same check registry (checks/), output formats
+(cli/json/sarif), and exit-code convention (0 = no findings or --soft-fail,
+1 = a check failed):
+
+  invariant scan
+      Baseline check. Walks --directory for service-control-policies/ and
+      rcp-policies/ JSON files and, for each one that has a same-named
+      counterpart in the guardrail catalog bundled with this package
+      (baseline/, copied from the LZA universal-configuration defaults),
+      proves via Z3 that it still denies everything the shipped baseline
+      denies. No --manifest or --reference needed -- the baseline ships
+      with the tool, so this is the "just run it" entry point.
+
+  invariant regression
+      Diff check. Reads --manifest (see build_manifest.py, which derives
+      pairings from a git diff) and proves each candidate still denies
+      everything its *paired* reference denied. Use this when you want to
+      check against something other than the bundled baseline (e.g. your
+      org's own last-known-good, or an upstream LZAUC release).
+
+CLI conventions deliberately mirror Checkov:
+  --check               run only these check IDs (comma-separated)
+  --skip-check          exclude these check IDs (comma-separated)
+  --output / -o         cli | json | sarif (repeatable, like Checkov)
+  --soft-fail           always exit 0 regardless of findings
+  --compact             suppress passed-check output in CLI mode
+
+Inline suppression, Checkov-style: a candidate JSON file can carry a
+top-level "_suppressions" array (since raw AWS policy JSON has no comment
+syntax to piggyback on the way HCL/YAML checks do):
+    "_suppressions": [
+      {"check_id": "INV_AWS_001", "reason": "JIRA-1234: intentional widen"}
+    ]
+This key is stripped before the policy is handed to the solver.
+"""
+import argparse
+import json
+import os
+import sys
+
+import invariant.checks.scp_permissiveness_regression  # noqa: F401  (import = register)
+from invariant.checks.base import all_checks, Severity
+
+
+SEVERITY_ORDER = [Severity.CRITICAL, Severity.HIGH, Severity.MEDIUM,
+                   Severity.LOW, Severity.INFO]
+
+# Same directories CI already scopes guardrail scans to (see
+# .gitlab-ci.yml CANDIDATE_DIRS). declarative-policies is deliberately
+# excluded here: its @@assign schema isn't a Deny-statement IAM policy, so
+# no registered check's applies_to() matches it anyway.
+SCANNED_SUBDIRS = ("service-control-policies", "rcp-policies")
+
+BASELINE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "baseline")
+
+
+def load_manifest(manifest_path: str) -> list[dict]:
+    """
+    Declarative pairing of reference <-> candidate, Semgrep-config-style,
+    so most new file pairs need zero Python. Example manifest.json:
+    [
+      {"reference": "reference/lza-core-guardrails-1.json",
+       "candidate": "service-control-policies/lza-core-guardrails-1.json"},
+      ...
+    ]
+    """
+    with open(manifest_path) as f:
+        return json.load(f)
+
+
+def discover_baseline_manifest(directory: str) -> list[dict]:
+    """
+    Pair every service-control-policies/*.json and rcp-policies/*.json file
+    found under `directory` with its same-named counterpart in the bundled
+    baseline catalog (basename matching, same convention build_manifest.py
+    uses for git-diff-based pairing).
+
+    Files with no baseline counterpart are reported (not silently dropped)
+    and excluded -- the bundled catalog only covers the default LZA
+    guardrails shipped with this template, so a fully custom SCP has no
+    baseline security property to prove yet. Pair it against something via
+    `invariant regression --manifest` instead.
+    """
+    manifest = []
+    skipped = []
+
+    for subdir in SCANNED_SUBDIRS:
+        root = os.path.join(directory, subdir)
+        if not os.path.isdir(root):
+            continue
+        for entry in sorted(os.listdir(root)):
+            candidate_path = os.path.join(root, entry)
+            if not (entry.endswith(".json") and os.path.isfile(candidate_path)):
+                continue
+            baseline_path = os.path.join(BASELINE_DIR, subdir, entry)
+            if not os.path.isfile(baseline_path):
+                skipped.append(candidate_path)
+                continue
+            manifest.append({
+                "reference": baseline_path,
+                "candidate": candidate_path,
+            })
+
+    if skipped:
+        print("The following files have no counterpart in the bundled "
+              "baseline catalog and were excluded from this scan:",
+              file=sys.stderr)
+        for f in skipped:
+            print(f"  - {f}", file=sys.stderr)
+
+    return manifest
+
+
+def load_policy_and_suppressions(path: str):
+    with open(path) as f:
+        data = json.load(f)
+    suppressions = {s["check_id"] for s in data.pop("_suppressions", [])}
+    return data, suppressions
+
+
+def run(manifest_entries, only_checks=None, skip_checks=None):
+    results = []
+    registry = all_checks()
+    check_ids = set(registry.keys())
+    if only_checks:
+        check_ids &= set(only_checks)
+    if skip_checks:
+        check_ids -= set(skip_checks)
+
+    for entry in manifest_entries:
+        candidate_path = entry["candidate"]
+        reference, _ = load_policy_and_suppressions(entry["reference"])
+        candidate, suppressed = load_policy_and_suppressions(candidate_path)
+
+        for check_id in sorted(check_ids):
+            check_cls = registry[check_id]
+            check = check_cls()
+            if not check.applies_to(candidate_path):
+                continue
+            if check_id in suppressed:
+                results.append(f"SKIPPED {check_id} on {candidate_path} (suppressed)")
+                continue
+            result = check.run(reference, candidate, candidate_path)
+            results.append(result)
+    return results
+
+
+def to_sarif(results, tool_version="0.1.0"):
+    """Minimal SARIF 2.1.0, enough for GitLab's SAST report ingestion."""
+    rules = {}
+    findings = []
+    for r in results:
+        if isinstance(r, str):
+            continue
+        rules[r.check_id] = {
+            "id": r.check_id,
+            "shortDescription": {"text": r.check_id},
+        }
+        if not r.passed:
+            findings.append({
+                "ruleId": r.check_id,
+                "level": "error" if r.severity in
+                         (Severity.CRITICAL, Severity.HIGH) else "warning",
+                "message": {"text": r.message},
+                "locations": [{
+                    "physicalLocation": {
+                        "artifactLocation": {"uri": r.file_path}
+                    }
+                }],
+            })
+    return {
+        "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
+        "version": "2.1.0",
+        "runs": [{
+            "tool": {"driver": {
+                "name": "invariant",
+                "version": tool_version,
+                "rules": list(rules.values()),
+            }},
+            "results": findings,
+        }],
+    }
+
+
+def _add_common_args(parser):
+    parser.add_argument("--check", default=None,
+                         help="comma-separated check IDs to run (default: all)")
+    parser.add_argument("--skip-check", default=None,
+                         help="comma-separated check IDs to exclude")
+    parser.add_argument("--output", "-o", action="append",
+                         choices=["cli", "json", "sarif"], default=[])
+    parser.add_argument("--soft-fail", action="store_true",
+                         help="always exit 0 regardless of findings")
+    parser.add_argument("--compact", action="store_true",
+                         help="suppress passed-check output in CLI mode")
+    parser.add_argument("--out-dir", default="solver-results")
+
+
+def _emit_and_exit_code(results, args) -> int:
+    outputs = args.output or ["cli"]
+    os.makedirs(args.out_dir, exist_ok=True)
+    failed = [r for r in results if not isinstance(r, str) and not r.passed]
+
+    if "cli" in outputs:
+        for r in results:
+            if isinstance(r, str):
+                print(r)
+                continue
+            if r.passed and args.compact:
+                continue
+            status = "PASS" if r.passed else f"FAIL ({r.severity.value})"
+            print(f"[{status}] {r.check_id}  {r.file_path}  {r.message}")
+
+    if "json" in outputs:
+        path = os.path.join(args.out_dir, "results.json")
+        with open(path, "w") as f:
+            json.dump([r.__dict__ if not isinstance(r, str) else r
+                       for r in results], f, indent=2, default=str)
+
+    if "sarif" in outputs:
+        path = os.path.join(args.out_dir, "results.sarif")
+        with open(path, "w") as f:
+            json.dump(to_sarif(results), f, indent=2)
+
+    if args.soft_fail:
+        return 0
+    return 1 if failed else 0
+
+
+def cmd_scan(args) -> int:
+    only = args.check.split(",") if args.check else None
+    skip = args.skip_check.split(",") if args.skip_check else None
+    entries = discover_baseline_manifest(args.directory)
+    if not entries:
+        print(f"No SCP/RCP files with a bundled baseline counterpart were "
+              f"found under {args.directory}", file=sys.stderr)
+    results = run(entries, only_checks=only, skip_checks=skip)
+    return _emit_and_exit_code(results, args)
+
+
+def cmd_regression(args) -> int:
+    only = args.check.split(",") if args.check else None
+    skip = args.skip_check.split(",") if args.skip_check else None
+    entries = load_manifest(args.manifest)
+    results = run(entries, only_checks=only, skip_checks=skip)
+    return _emit_and_exit_code(results, args)
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog="invariant", description="Invariant: SMT-based guardrail SAST")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    scan_parser = subparsers.add_parser(
+        "scan",
+        help="Prove every SCP/RCP under --directory upholds the bundled "
+             "LZA default guardrail properties (no reference needed)")
+    scan_parser.add_argument(
+        "--directory", "-d", default=".",
+        help="root to scan for service-control-policies/ and rcp-policies/ "
+             "(default: current directory)")
+    _add_common_args(scan_parser)
+    scan_parser.set_defaults(func=cmd_scan)
+
+    regression_parser = subparsers.add_parser(
+        "regression",
+        help="Diff each candidate in --manifest against its paired "
+             "reference (see build_manifest.py)")
+    regression_parser.add_argument("--manifest", "-m", default="manifest.json")
+    _add_common_args(regression_parser)
+    regression_parser.set_defaults(func=cmd_regression)
+
+    args = parser.parse_args()
+    sys.exit(args.func(args))
+
+
+if __name__ == "__main__":
+    main()

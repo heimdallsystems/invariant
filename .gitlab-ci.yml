@@ -1,0 +1,107 @@
+## Invariant — SMT-based guardrail SAST — GitLab CI
+##
+## Assumes:
+##   - the `invariant` package (pyproject.toml at the root of the invariant/
+##     tool repo) is installable via $INVARIANT_PIP_SPEC below -- point that
+##     at your actual package source: a private index (set PIP_INDEX_URL),
+##     your GitLab group's PyPI package registry, or a `git+https://` URL.
+##   - reference/  holds the last-known-good (or LZAUC-upstream) copies of
+##     every service-control-policies/*.json and rcp-policies/*.json file,
+##     used only by the regression job below
+##   - candidate files are whatever's on the MR branch under those same paths
+##
+## Two independent checks:
+##   invariant:guardrail-regression  -- diff-scoped: only files that changed
+##       in this MR, checked against your own reference/ pairing. Keeps
+##       runtime bounded on large orgs with many guardrail files.
+##   invariant:guardrail-baseline    -- full sweep, every run: every SCP/RCP
+##       under the repo checked against the LZA default guardrail catalog
+##       bundled with the invariant package itself. No reference/ needed --
+##       this is what `invariant scan` proves out of the box.
+
+stages:
+  - schema-check
+  - policy-reasoning
+
+variables:
+  SOLVER_TIMEOUT_SECONDS: "60"     # per-file hard timeout, see run_checks.sh
+  REFERENCE_DIR: "reference"
+  CANDIDATE_DIRS: "service-control-policies rcp-policies declarative-policies"
+  INVARIANT_PIP_SPEC: "invariant"   # override: private index, package registry, or git+https URL
+
+# --- Tier 1: fast schema/presence checks, no solver -------------------------
+schema:validate:
+  stage: schema-check
+  image: python:3.12-slim
+  before_script:
+    - pip install --quiet jsonschema pyyaml
+  script:
+    - python schema/validate_config.py --config .
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+# --- Tier 2a: SMT permissiveness-regression check, diff-scoped --------------
+invariant:guardrail-regression:
+  stage: policy-reasoning
+  image: python:3.12-slim
+  needs: ["schema:validate"]
+  before_script:
+    - pip install --quiet "$INVARIANT_PIP_SPEC"
+    - apt-get update -qq && apt-get install -y -qq git > /dev/null
+  script:
+    - |
+      # manifest.json is regenerated each run from whatever changed vs the
+      # target branch, so you don't hand-maintain pairings for files that
+      # didn't change in this MR.
+      if [ "$CI_PIPELINE_SOURCE" = "merge_request_event" ]; then
+        git fetch origin "$CI_MERGE_REQUEST_TARGET_BRANCH_NAME" --depth=1
+        DIFF_BASE="origin/$CI_MERGE_REQUEST_TARGET_BRANCH_NAME"
+      else
+        DIFF_BASE="$CI_COMMIT_BEFORE_SHA"
+      fi
+      python -m invariant.build_manifest \
+        --diff-base "$DIFF_BASE" \
+        --reference-dir "$REFERENCE_DIR" \
+        --candidate-dirs $CANDIDATE_DIRS \
+        --out manifest.json
+
+    - timeout "$SOLVER_TIMEOUT_SECONDS" invariant regression \
+        --manifest manifest.json \
+        --output cli --output sarif --output json \
+        --out-dir solver-results
+  artifacts:
+    when: always
+    paths:
+      - solver-results/
+    reports:
+      sast: solver-results/results.sarif   # GitLab renders this natively on the MR diff
+    expire_in: 30 days
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  timeout: 15m   # hard ceiling on the whole job, independent of the SOLVER_TIMEOUT_SECONDS per-run cap
+
+# --- Tier 2b: SMT baseline check against the bundled LZA default catalog ----
+invariant:guardrail-baseline:
+  stage: policy-reasoning
+  image: python:3.12-slim
+  needs: ["schema:validate"]
+  before_script:
+    - pip install --quiet "$INVARIANT_PIP_SPEC"
+  script:
+    - timeout "$SOLVER_TIMEOUT_SECONDS" invariant scan \
+        --directory . \
+        --output cli --output sarif --output json \
+        --out-dir solver-results-baseline
+  artifacts:
+    when: always
+    paths:
+      - solver-results-baseline/
+    reports:
+      sast: solver-results-baseline/results.sarif
+    expire_in: 30 days
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  timeout: 15m

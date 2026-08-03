@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "invariant"
+version = "0.1.0"
+description = "SMT-based guardrail SAST for AWS SCP/RCP JSON (baseline + regression checks)"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.10"
+dependencies = [
+    "z3-solver",
+]
+classifiers = [
+    "Environment :: Console",
+    "Intended Audience :: System Administrators",
+    "Topic :: Security",
+    "Topic :: Software Development :: Quality Assurance",
+]
+
+[project.urls]
+Homepage = "https://github.com/YOUR_ORG/invariant"
+Issues = "https://github.com/YOUR_ORG/invariant/issues"
+
+[project.scripts]
+invariant = "invariant.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+invariant = ["baseline/**/*.json"]

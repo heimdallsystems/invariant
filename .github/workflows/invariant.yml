@@ -1,0 +1,120 @@
+# Invariant guardrail checks -- GitHub Actions template
+#
+# This is a TEMPLATE: copy this file into your own AWS LZA config repo's
+# .github/workflows/, not into a fork of the invariant tool repo itself.
+# (See .gitlab-ci.yml for the equivalent GitLab job, if you deploy via
+# GitLab instead.)
+#
+# Assumes:
+#   - the `invariant` package is installable via $INVARIANT_PIP_SPEC below --
+#     point that at your actual package source: a private index (set
+#     PIP_INDEX_URL), your org's PyPI package registry, or a `git+https://`
+#     URL.
+#   - reference/  holds the last-known-good (or LZAUC-upstream) copies of
+#     every service-control-policies/*.json and rcp-policies/*.json file,
+#     used only by the regression job below.
+#   - candidate files are whatever's on the PR branch under those same paths.
+#
+# Two independent checks, same split as the GitLab template:
+#   guardrail-baseline    -- full sweep, every run: every SCP/RCP under the
+#       repo checked against the LZA default guardrail catalog bundled with
+#       the invariant package itself. No reference/ needed.
+#   guardrail-regression  -- diff-scoped: only files that changed in this
+#       PR, checked against your own reference/ pairing.
+
+name: Invariant guardrail checks
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+env:
+  INVARIANT_PIP_SPEC: invariant   # override: private index, package registry, or git+https URL
+  SOLVER_TIMEOUT_SECONDS: "60"    # per-file hard timeout
+
+jobs:
+  guardrail-baseline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install invariant
+        run: pip install --quiet "$INVARIANT_PIP_SPEC"
+
+      - name: Run baseline scan
+        run: |
+          timeout "$SOLVER_TIMEOUT_SECONDS" invariant scan \
+            --directory . \
+            --output cli --output sarif --output json \
+            --out-dir solver-results-baseline
+
+      - name: Upload SARIF to code scanning
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: solver-results-baseline/results.sarif
+
+      - name: Upload results artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: invariant-baseline-results
+          path: solver-results-baseline/
+          retention-days: 30
+
+  guardrail-regression:
+    runs-on: ubuntu-latest
+    needs: []
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # need history for the diff-base fetch below
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install invariant
+        run: pip install --quiet "$INVARIANT_PIP_SPEC"
+
+      - name: Build manifest.json from the PR diff
+        run: |
+          if [ -n "${GITHUB_BASE_REF:-}" ]; then
+            git fetch origin "$GITHUB_BASE_REF" --depth=1
+            DIFF_BASE="origin/$GITHUB_BASE_REF"
+          else
+            DIFF_BASE="${{ github.event.before }}"
+          fi
+          python -m invariant.build_manifest \
+            --diff-base "$DIFF_BASE" \
+            --reference-dir reference \
+            --candidate-dirs service-control-policies rcp-policies declarative-policies \
+            --out manifest.json
+
+      - name: Run regression check
+        run: |
+          timeout "$SOLVER_TIMEOUT_SECONDS" invariant regression \
+            --manifest manifest.json \
+            --output cli --output sarif --output json \
+            --out-dir solver-results
+
+      - name: Upload SARIF to code scanning
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: solver-results/results.sarif
+
+      - name: Upload results artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: invariant-regression-results
+          path: solver-results/
+          retention-days: 30
