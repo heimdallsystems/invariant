@@ -6,17 +6,27 @@
 ##     at your actual package source: a private index (set PIP_INDEX_URL),
 ##     your GitLab group's PyPI package registry, or a `git+https://` URL.
 ##   - reference/  holds the last-known-good (or LZAUC-upstream) copies of
-##     every service-control-policies/*.json and rcp-policies/*.json file,
-##     used only by the regression job below
+##     every service-control-policies/*.json, rcp-policies/*.json, and
+##     iam-policies/*.json file, mirroring that same subdirectory under
+##     reference/ (e.g. reference/iam-policies/foo.json) -- used only by the
+##     regression job below, and only for files you actually want an
+##     INV_AWS_002 grant-regression proof on (permission boundaries and
+##     other security-sensitive customer-managed IAM policies; a plain
+##     least-privilege app policy doesn't need one, INV_AWS_003 covers it
+##     with no reference at all)
 ##   - candidate files are whatever's on the MR branch under those same paths
 ##
 ## Two independent checks:
 ##   invariant:guardrail-regression  -- diff-scoped: only files that changed
-##       in this MR, checked against your own reference/ pairing. Keeps
-##       runtime bounded on large orgs with many guardrail files.
+##       in this MR, checked against your own reference/ pairing (INV_AWS_001
+##       for SCP/RCP, INV_AWS_002 for IAM policies that have a reference/
+##       copy). Keeps runtime bounded on large orgs with many guardrail
+##       files.
 ##   invariant:guardrail-baseline    -- full sweep, every run: every SCP/RCP
 ##       under the repo checked against the LZA default guardrail catalog
-##       bundled with the invariant package itself. No reference/ needed --
+##       bundled with the invariant package itself (INV_AWS_001), plus
+##       INV_AWS_003 (privilege-escalation primitives) on every
+##       iam-policies/*.json found, reference or not. No reference/ needed --
 ##       this is what `invariant scan` proves out of the box.
 
 stages:
@@ -24,9 +34,13 @@ stages:
   - policy-reasoning
 
 variables:
+  # NotResource/NotAction-heavy IAM policies (permission boundaries) solve
+  # noticeably slower than a typical SCP -- see README's "Performance"
+  # section. Raise this if guardrail-regression/-baseline start timing out
+  # once iam-policies/ has real content.
   SOLVER_TIMEOUT_SECONDS: "60"     # per-file hard timeout, see run_checks.sh
   REFERENCE_DIR: "reference"
-  CANDIDATE_DIRS: "service-control-policies rcp-policies declarative-policies"
+  CANDIDATE_DIRS: "service-control-policies rcp-policies iam-policies declarative-policies"
   INVARIANT_PIP_SPEC: "invariant"   # override: private index, package registry, or git+https URL
 
 # --- Tier 1: fast schema/presence checks, no solver -------------------------

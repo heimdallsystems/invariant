@@ -32,11 +32,18 @@ class BaseCheck:
     description: str = ""
     remediation: str = ""
 
+    # Most checks are relative (candidate vs. reference/baseline). A check
+    # that proves an absolute property of the candidate alone (e.g. "does
+    # this grant a known privilege-escalation primitive?") sets this to
+    # False so it still runs on files with no baseline/reference counterpart
+    # -- see discover_candidates() in cli.py.
+    NEEDS_REFERENCE: bool = True
+
     def applies_to(self, file_path: str) -> bool:
         """Whether this check should run against the given candidate path."""
         return True
 
-    def run(self, reference: dict, candidate: dict, file_path: str) -> CheckResult:
+    def run(self, reference: Optional[dict], candidate: dict, file_path: str) -> CheckResult:
         raise NotImplementedError
 
 

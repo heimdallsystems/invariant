@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "invariant-sast"
-version = "0.1.0"
-description = "SMT-based guardrail SAST for AWS SCP/RCP JSON (baseline + regression checks)"
+version = "0.2.0"
+description = "SMT-based guardrail SAST for AWS SCP/RCP/IAM JSON (baseline + regression + privilege-escalation checks)"
 readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.10"
@@ -24,6 +24,7 @@ docs = [
     "mkdocs>=1.6",
     "mkdocs-material>=9.5",
 ]
+dev = ["pytest"]
 
 [project.urls]
 Homepage = "https://ikurira.github.io/invariant/"

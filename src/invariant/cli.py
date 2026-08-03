@@ -6,20 +6,24 @@ Two subcommands, sharing the same check registry (checks/), output formats
 1 = a check failed):
 
   invariant scan
-      Baseline check. Walks --directory for service-control-policies/ and
-      rcp-policies/ JSON files and, for each one that has a same-named
+      Baseline check. Walks --directory for service-control-policies/,
+      rcp-policies/, and iam-policies/ JSON files. Files with a same-named
       counterpart in the guardrail catalog bundled with this package
-      (baseline/, copied from the LZA universal-configuration defaults),
-      proves via Z3 that it still denies everything the shipped baseline
-      denies. No --manifest or --reference needed -- the baseline ships
-      with the tool, so this is the "just run it" entry point.
+      (baseline/, copied from the LZA universal-configuration defaults) get
+      the full relative-check treatment (INV_AWS_001/002): Z3 proves the
+      candidate still denies/grants exactly what the baseline did. Files
+      with no baseline counterpart -- the common case for iam-policies/,
+      since custom IAM policies aren't part of the LZA default catalog --
+      still get every reference-free check (INV_AWS_003, privilege
+      escalation) run against them. No --manifest or --reference needed --
+      this is the "just run it" entry point.
 
   invariant regression
       Diff check. Reads --manifest (see build_manifest.py, which derives
-      pairings from a git diff) and proves each candidate still denies
-      everything its *paired* reference denied. Use this when you want to
-      check against something other than the bundled baseline (e.g. your
-      org's own last-known-good, or an upstream LZAUC release).
+      pairings from a git diff) and proves each candidate still denies/
+      grants exactly what its *paired* reference did. Use this when you
+      want to check against something other than the bundled baseline
+      (e.g. your org's own last-known-good, or an upstream LZAUC release).
 
 CLI conventions deliberately mirror Checkov:
   --check               run only these check IDs (comma-separated)
@@ -42,6 +46,8 @@ import os
 import sys
 
 import invariant.checks.scp_permissiveness_regression  # noqa: F401  (import = register)
+import invariant.checks.iam_policy_permissiveness_regression  # noqa: F401
+import invariant.checks.iam_privilege_escalation  # noqa: F401
 from invariant.checks.base import all_checks, Severity
 
 
@@ -49,10 +55,12 @@ SEVERITY_ORDER = [Severity.CRITICAL, Severity.HIGH, Severity.MEDIUM,
                    Severity.LOW, Severity.INFO]
 
 # Same directories CI already scopes guardrail scans to (see
-# .gitlab-ci.yml CANDIDATE_DIRS). declarative-policies is deliberately
-# excluded here: its @@assign schema isn't a Deny-statement IAM policy, so
-# no registered check's applies_to() matches it anyway.
-SCANNED_SUBDIRS = ("service-control-policies", "rcp-policies")
+# .gitlab-ci.yml CANDIDATE_DIRS), plus iam-policies/ for the Allow-based
+# identity/permission-boundary checks (INV_AWS_002, INV_AWS_003).
+# declarative-policies is deliberately excluded here: its @@assign schema
+# isn't a Deny/Allow-statement IAM policy, so no registered check's
+# applies_to() matches it anyway.
+SCANNED_SUBDIRS = ("service-control-policies", "rcp-policies", "iam-policies")
 
 BASELINE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "baseline")
 
@@ -71,21 +79,26 @@ def load_manifest(manifest_path: str) -> list[dict]:
         return json.load(f)
 
 
-def discover_baseline_manifest(directory: str) -> list[dict]:
+def discover_candidates(directory: str) -> list[dict]:
     """
-    Pair every service-control-policies/*.json and rcp-policies/*.json file
-    found under `directory` with its same-named counterpart in the bundled
-    baseline catalog (basename matching, same convention build_manifest.py
-    uses for git-diff-based pairing).
+    Walk every service-control-policies/, rcp-policies/, and iam-policies/
+    JSON file found under `directory` and pair it with its same-named
+    counterpart in the bundled baseline catalog, if one exists (basename
+    matching, same convention build_manifest.py uses for git-diff-based
+    pairing).
 
-    Files with no baseline counterpart are reported (not silently dropped)
-    and excluded -- the bundled catalog only covers the default LZA
-    guardrails shipped with this template, so a fully custom SCP has no
-    baseline security property to prove yet. Pair it against something via
-    `invariant regression --manifest` instead.
+    Unlike the old baseline-only discovery, a missing baseline counterpart
+    no longer drops the file from the scan entirely -- it's still returned,
+    with `"reference": None`. Relative (reference-needing) checks skip it
+    at run() time and report why; absolute checks like INV_AWS_003
+    (privilege escalation) run on it anyway, since they don't need a
+    baseline to prove a property of a single policy. The bundled catalog
+    only covers the default LZA guardrails (SCP/RCP), never an org's own
+    custom iam-policies/ content, so this is the common case for that
+    directory, not an edge case.
     """
-    manifest = []
-    skipped = []
+    candidates = []
+    no_baseline = []
 
     for subdir in SCANNED_SUBDIRS:
         root = os.path.join(directory, subdir)
@@ -97,21 +110,24 @@ def discover_baseline_manifest(directory: str) -> list[dict]:
                 continue
             baseline_path = os.path.join(BASELINE_DIR, subdir, entry)
             if not os.path.isfile(baseline_path):
-                skipped.append(candidate_path)
+                no_baseline.append(candidate_path)
+                candidates.append({"reference": None, "candidate": candidate_path})
                 continue
-            manifest.append({
+            candidates.append({
                 "reference": baseline_path,
                 "candidate": candidate_path,
             })
 
-    if skipped:
+    if no_baseline:
         print("The following files have no counterpart in the bundled "
-              "baseline catalog and were excluded from this scan:",
+              "baseline catalog -- checks that need a reference (e.g. "
+              "INV_AWS_001, INV_AWS_002) are skipped for them, but "
+              "reference-free checks (e.g. INV_AWS_003) still run:",
               file=sys.stderr)
-        for f in skipped:
+        for f in no_baseline:
             print(f"  - {f}", file=sys.stderr)
 
-    return manifest
+    return candidates
 
 
 def load_policy_and_suppressions(path: str):
@@ -132,7 +148,9 @@ def run(manifest_entries, only_checks=None, skip_checks=None):
 
     for entry in manifest_entries:
         candidate_path = entry["candidate"]
-        reference, _ = load_policy_and_suppressions(entry["reference"])
+        reference_path = entry.get("reference")
+        reference = (load_policy_and_suppressions(reference_path)[0]
+                     if reference_path else None)
         candidate, suppressed = load_policy_and_suppressions(candidate_path)
 
         for check_id in sorted(check_ids):
@@ -143,12 +161,19 @@ def run(manifest_entries, only_checks=None, skip_checks=None):
             if check_id in suppressed:
                 results.append(f"SKIPPED {check_id} on {candidate_path} (suppressed)")
                 continue
+            if reference is None and check.NEEDS_REFERENCE:
+                results.append(
+                    f"SKIPPED {check_id} on {candidate_path} "
+                    f"(no reference/baseline counterpart)")
+                continue
             result = check.run(reference, candidate, candidate_path)
             results.append(result)
     return results
 
 
-def to_sarif(results, tool_version="0.1.0"):
+def to_sarif(results, tool_version=None):
+    from invariant import __version__
+    tool_version = tool_version or __version__
     """Minimal SARIF 2.1.0, enough for GitLab's SAST report ingestion."""
     rules = {}
     findings = []
@@ -216,9 +241,16 @@ def _emit_and_exit_code(results, args) -> int:
 
     if "json" in outputs:
         path = os.path.join(args.out_dir, "results.json")
+
+        def to_dict(r):
+            if isinstance(r, str):
+                return r
+            d = dict(r.__dict__)
+            d["severity"] = r.severity.value  # Severity.HIGH -> "high", not the enum repr
+            return d
+
         with open(path, "w") as f:
-            json.dump([r.__dict__ if not isinstance(r, str) else r
-                       for r in results], f, indent=2, default=str)
+            json.dump([to_dict(r) for r in results], f, indent=2, default=str)
 
     if "sarif" in outputs:
         path = os.path.join(args.out_dir, "results.sarif")
@@ -233,10 +265,10 @@ def _emit_and_exit_code(results, args) -> int:
 def cmd_scan(args) -> int:
     only = args.check.split(",") if args.check else None
     skip = args.skip_check.split(",") if args.skip_check else None
-    entries = discover_baseline_manifest(args.directory)
+    entries = discover_candidates(args.directory)
     if not entries:
-        print(f"No SCP/RCP files with a bundled baseline counterpart were "
-              f"found under {args.directory}", file=sys.stderr)
+        print(f"No SCP/RCP/IAM policy files were found under "
+              f"{args.directory}", file=sys.stderr)
     results = run(entries, only_checks=only, skip_checks=skip)
     return _emit_and_exit_code(results, args)
 
@@ -256,12 +288,14 @@ def main():
 
     scan_parser = subparsers.add_parser(
         "scan",
-        help="Prove every SCP/RCP under --directory upholds the bundled "
-             "LZA default guardrail properties (no reference needed)")
+        help="Prove every SCP/RCP/IAM policy under --directory upholds the "
+             "bundled LZA default guardrail properties where a baseline "
+             "counterpart exists, plus every reference-free check (e.g. "
+             "IAM privilege escalation) regardless")
     scan_parser.add_argument(
         "--directory", "-d", default=".",
-        help="root to scan for service-control-policies/ and rcp-policies/ "
-             "(default: current directory)")
+        help="root to scan for service-control-policies/, rcp-policies/, "
+             "and iam-policies/ (default: current directory)")
     _add_common_args(scan_parser)
     scan_parser.set_defaults(func=cmd_scan)
 

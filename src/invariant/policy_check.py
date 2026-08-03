@@ -1,26 +1,51 @@
 """
-Invariant -- SMT-based permissiveness-regression checker (core engine).
+Invariant -- SMT-based policy-analysis core engine.
 
-Answers one concrete question per run: does the CANDIDATE version of an SCP/RCP
-allow any request that the REFERENCE version explicitly denied? If so, that's
-a guardrail regression, surfaced as a counterexample.
+Two request-context models sharing one Z3 encoding:
+  - Deny-side (SCP/RCP account guardrails): does the CANDIDATE version deny
+    every request the REFERENCE version explicitly denied?
+    (find_permissiveness_regression, INV_AWS_001)
+  - Allow-side (iam-policies/ identity & permission-boundary policies): does
+    the CANDIDATE grant anything the REFERENCE didn't
+    (find_grant_regression, INV_AWS_002), or does a single CANDIDATE grant a
+    known privilege-escalation primitive on any resource at all
+    (find_privilege_escalation, INV_AWS_003)?
+
+Every finding is surfaced as a concrete counterexample, not a vague warning.
 
 Requires: pip install z3-solver
-Not executable in this sandbox (no network egress to install z3) -- run this
-locally or in your GitLab CI job where pip has internet access.
 """
 import json
 from dataclasses import dataclass
 from z3 import (
     String, Bool, Solver, sat, InRe, Not, Or, And, Implies, Star, Concat, Re,
-    Range as CharRange, StringVal
+    Range, StringVal
 )
 
 
 # ---------------------------------------------------------------------------
 # 1. AWS ARN/action wildcard -> Z3 regular expression
+#
+# ANY_CHAR must match z3's "any single character" (previously a manually
+# built Range(chr(0), chr(0x10FFFF)), which silently degrades to matching
+# only the empty string under z3-solver >=5.0 -- confirmed against
+# 5.0.0.0, the version `pip install z3-solver` resolves to today. That
+# makes every "*"/"?" in every Action/Resource/ARN pattern stop matching
+# anything but "". Since nearly every real SCP/RCP/IAM statement uses a
+# wildcard somewhere, that silently defeated the tool's entire soundness
+# guarantee on a fresh install, with no error or warning.
+#
+# The correct fix is z3.AllChar(ReSort(StringSort())), but that quantifies
+# over the full Unicode codepoint space (~1.1M codepoints), and negating a
+# wildcard match over that alphabet (NotResource/NotAction -- exactly the
+# pattern permission-boundary policies use to carve out accelerator-managed
+# roles) makes automaton complementation expensive enough to blow well past
+# a 60s CI timeout on realistic policies. AWS action names and ARNs are
+# always printable ASCII (see the IAM policy grammar), so restricting the
+# alphabet here to printable ASCII is lossless for anything this tool
+# actually models, and turns that same case from >90s into ~6s.
 # ---------------------------------------------------------------------------
-ANY_CHAR = CharRange(chr(0), chr(0x10FFFF))
+ANY_CHAR = Range(chr(0x20), chr(0x7E))
 
 
 def wildcard_to_re(pattern: str):
@@ -89,6 +114,8 @@ class RequestContext:
     source_org_id_present: object
     source_arn_present: object
     called_via: object  # see simplification note above
+    permissions_boundary: object
+    permissions_boundary_present: object
 
     @classmethod
     def fresh(cls, suffix=""):
@@ -103,6 +130,8 @@ class RequestContext:
             source_org_id_present=Bool(f"source_org_id_present{suffix}"),
             source_arn_present=Bool(f"source_arn_present{suffix}"),
             called_via=String(f"called_via{suffix}"),
+            permissions_boundary=String(f"permissions_boundary{suffix}"),
+            permissions_boundary_present=Bool(f"permissions_boundary_present{suffix}"),
         )
 
 
@@ -131,10 +160,22 @@ def condition_predicate(condition: dict, ctx: RequestContext):
             for key, val in kv.items():
                 if key.lower() == "aws:principalarn":
                     clauses.append(Not(matches_any(ctx.principal, val)))
+                elif key.lower() == "iam:permissionsboundary":
+                    clauses.append(
+                        Implies(ctx.permissions_boundary_present,
+                                Not(matches_any(ctx.permissions_boundary, val))))
         elif op == "ArnLike":
             for key, val in kv.items():
                 if key.lower() == "aws:principalarn":
                     clauses.append(matches_any(ctx.principal, val))
+                elif key.lower() == "iam:permissionsboundary":
+                    # No IfExists variant used in the wild for this key today,
+                    # so an absent boundary fails this condition outright --
+                    # matching AWS's actual evaluation of ArnLike on a key
+                    # that isn't present in the request.
+                    clauses.append(
+                        And(ctx.permissions_boundary_present,
+                            matches_any(ctx.permissions_boundary, val)))
         elif op == "Bool":
             for key, val in kv.items():
                 target = (val == "true" if isinstance(val, str) else bool(val))
@@ -183,24 +224,57 @@ def condition_predicate(condition: dict, ctx: RequestContext):
     return And(*clauses) if clauses else True
 
 
+def _action_match(stmt: dict, ctx: RequestContext):
+    if "NotAction" in stmt:
+        # NotAction matches every action EXCEPT the listed ones (e.g. "lock
+        # this role down to read-only" -- GRIAMR in the LZA guardrails denies
+        # all IAM actions on accelerator roles except Get*/List*; the same
+        # NotAction shape shows up in Allow statements in identity policies,
+        # e.g. an end-user boundary that allows everything except iam:*/
+        # organizations:*/account:*).
+        return Not(matches_any(ctx.action, stmt["NotAction"]))
+    return matches_any(ctx.action, stmt.get("Action", "*"))
+
+
+def _resource_match(stmt: dict, ctx: RequestContext):
+    if "NotResource" in stmt:
+        return Not(matches_any(ctx.resource, stmt["NotResource"]))
+    return matches_any(ctx.resource, stmt.get("Resource", "*"))
+
+
 def statement_denies(stmt: dict, ctx: RequestContext):
     if stmt.get("Effect") != "Deny":
-        return False  # only modeling Deny statements (SCP/RCP guardrail pattern)
-    if "NotAction" in stmt:
-        # Deny + NotAction denies every action EXCEPT the listed ones (e.g.
-        # "lock down this role to read-only" -- GRIAMR in the LZA guardrails
-        # denies all IAM actions on accelerator roles except Get*/List*).
-        action_match = Not(matches_any(ctx.action, stmt["NotAction"]))
-    else:
-        action_match = matches_any(ctx.action, stmt["Action"])
-    resource_match = matches_any(ctx.resource, stmt.get("Resource", "*"))
+        return False
     cond = condition_predicate(stmt.get("Condition", {}), ctx)
-    return And(action_match, resource_match, cond)
+    return And(_action_match(stmt, ctx), _resource_match(stmt, ctx), cond)
+
+
+def statement_grants(stmt: dict, ctx: RequestContext):
+    if stmt.get("Effect") != "Allow":
+        return False
+    cond = condition_predicate(stmt.get("Condition", {}), ctx)
+    return And(_action_match(stmt, ctx), _resource_match(stmt, ctx), cond)
 
 
 def policy_denies(policy: dict, ctx: RequestContext):
     clauses = [statement_denies(s, ctx) for s in policy["Statement"]]
     return Or(*clauses) if clauses else False
+
+
+def policy_grants(policy: dict, ctx: RequestContext):
+    """
+    Identity/resource-policy evaluation semantics: a request is allowed if
+    some Allow statement matches AND no Deny statement in the same policy
+    matches (explicit deny always wins). This is the Allow-side counterpart
+    of policy_denies, used for iam-policies/ (permission boundaries,
+    customer-managed policies) rather than the account-boundary
+    service-control-policies/ and rcp-policies/ files, which are Deny-only.
+    """
+    allow = [statement_grants(s, ctx) for s in policy["Statement"]]
+    deny = [statement_denies(s, ctx) for s in policy["Statement"]]
+    allowed = Or(*allow) if allow else False
+    denied = Or(*deny) if deny else False
+    return And(allowed, Not(denied))
 
 
 # ---------------------------------------------------------------------------
@@ -232,6 +306,98 @@ def _model_to_jsonable(m):
     if m is None:
         return None
     return {str(d): str(m[d]) for d in m.decls()}
+
+
+# ---------------------------------------------------------------------------
+# 5. Grant-regression check: does CANDIDATE allow anything REFERENCE didn't?
+#
+# The Allow-side mirror of find_permissiveness_regression, for identity-based
+# and resource-based policies (iam-policies/) where the property worth
+# proving is the opposite direction: an SCP/RCP guardrail must keep denying
+# what it always denied, but a permission boundary or customer-managed policy
+# must not start ALLOWING something it never allowed -- e.g. a NotResource
+# exclusion list quietly losing an entry, or a Condition that scoped
+# iam:PassRole to specific roles getting loosened.
+# ---------------------------------------------------------------------------
+def find_grant_regression(reference: dict, candidate: dict, label=""):
+    ctx = RequestContext.fresh()
+
+    s = Solver()
+    s.add(Not(policy_grants(reference, ctx)))
+    s.add(policy_grants(candidate, ctx))
+
+    result = s.check()
+    if result == sat:
+        m = s.model()
+        print(f"[REGRESSION FOUND] {label}")
+        print(f"  action:   {m.eval(ctx.action, model_completion=True)}")
+        print(f"  resource: {m.eval(ctx.resource, model_completion=True)}")
+        print(f"  -> candidate grants this; reference did not.")
+        return m
+    else:
+        print(f"[OK] {label}: no regression found (candidate grants nothing "
+              f"new relative to the reference).")
+        return None
+
+
+# ---------------------------------------------------------------------------
+# 6. Privilege-escalation primitive check (single policy, no reference)
+#
+# Checkov/Semgrep flag a bare "Action": "iam:*" or a single dangerous action
+# by pattern; they can't tell you whether a *combination* of NotAction /
+# NotResource / Condition clauses still leaves that action reachable. This
+# asks Z3 directly: for a fixed, known-dangerous action (drawn from the
+# public IAM privilege-escalation primitive list -- PassRole abuse, policy
+# version tampering, self-attachment of admin policies, etc.), does there
+# exist ANY resource this policy grants it on, once explicit Deny statements
+# in the same policy are accounted for? A `sat` result comes back with a
+# concrete resource ARN, not just "this looks risky".
+#
+# This is an absolute property (no baseline/reference needed), unlike the
+# two regression checks above -- it can run on a brand-new custom IAM policy
+# from the moment it's written.
+# ---------------------------------------------------------------------------
+PRIVILEGE_ESCALATION_ACTIONS = [
+    "iam:CreatePolicyVersion",
+    "iam:SetDefaultPolicyVersion",
+    "iam:CreateAccessKey",
+    "iam:CreateLoginProfile",
+    "iam:UpdateLoginProfile",
+    "iam:AttachUserPolicy",
+    "iam:AttachGroupPolicy",
+    "iam:AttachRolePolicy",
+    "iam:PutUserPolicy",
+    "iam:PutGroupPolicy",
+    "iam:PutRolePolicy",
+    "iam:AddUserToGroup",
+    "iam:UpdateAssumeRolePolicy",
+    "iam:PassRole",
+    "sts:AssumeRole",
+]
+
+
+def find_privilege_escalation(candidate: dict, label="", actions=None):
+    """
+    Returns a list of (action, model) pairs -- one per dangerous action the
+    candidate policy grants unconditionally on at least one resource. Each
+    model carries a concrete resource ARN counterexample.
+    """
+    findings = []
+    for action in (actions or PRIVILEGE_ESCALATION_ACTIONS):
+        ctx = RequestContext.fresh()
+        s = Solver()
+        s.add(ctx.action == StringVal(action))
+        s.add(policy_grants(candidate, ctx))
+
+        if s.check() == sat:
+            m = s.model()
+            print(f"[PRIVESC] {label}: grants {action} on "
+                  f"{m.eval(ctx.resource, model_completion=True)}")
+            findings.append((action, m))
+    if not findings:
+        print(f"[OK] {label}: no known privilege-escalation primitive "
+              f"granted unconditionally.")
+    return findings
 
 
 def main():

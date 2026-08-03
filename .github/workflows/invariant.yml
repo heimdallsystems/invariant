@@ -11,16 +11,21 @@
 #     PIP_INDEX_URL), your org's PyPI package registry, or a `git+https://`
 #     URL.
 #   - reference/  holds the last-known-good (or LZAUC-upstream) copies of
-#     every service-control-policies/*.json and rcp-policies/*.json file,
-#     used only by the regression job below.
+#     every service-control-policies/*.json, rcp-policies/*.json, and
+#     iam-policies/*.json file, mirroring that subdirectory under reference/
+#     (e.g. reference/iam-policies/foo.json). Only used by the regression
+#     job, and only needed for IAM policies you want an INV_AWS_002
+#     grant-regression proof on -- INV_AWS_003 (privilege-escalation
+#     primitives) runs with no reference at all, in the baseline job.
 #   - candidate files are whatever's on the PR branch under those same paths.
 #
 # Two independent checks, same split as the GitLab template:
 #   guardrail-baseline    -- full sweep, every run: every SCP/RCP under the
 #       repo checked against the LZA default guardrail catalog bundled with
-#       the invariant package itself. No reference/ needed.
+#       the invariant package itself (INV_AWS_001), plus INV_AWS_003 on
+#       every iam-policies/*.json found. No reference/ needed.
 #   guardrail-regression  -- diff-scoped: only files that changed in this
-#       PR, checked against your own reference/ pairing.
+#       PR, checked against your own reference/ pairing (INV_AWS_001/002).
 
 name: Invariant guardrail checks
 
@@ -31,6 +36,10 @@ on:
 
 env:
   INVARIANT_PIP_SPEC: invariant   # override: private index, package registry, or git+https URL
+  # NotResource/NotAction-heavy IAM policies (permission boundaries) solve
+  # noticeably slower than a typical SCP -- see README's "Performance"
+  # section. Raise this if either job starts timing out once
+  # iam-policies/ has real content.
   SOLVER_TIMEOUT_SECONDS: "60"    # per-file hard timeout
 
 jobs:
@@ -95,7 +104,7 @@ jobs:
           python -m invariant.build_manifest \
             --diff-base "$DIFF_BASE" \
             --reference-dir reference \
-            --candidate-dirs service-control-policies rcp-policies declarative-policies \
+            --candidate-dirs service-control-policies rcp-policies iam-policies declarative-policies \
             --out manifest.json
 
       - name: Run regression check
