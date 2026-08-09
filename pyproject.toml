@@ -3,7 +3,7 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "invariant"
+name = "invariant-sast"
 version = "0.1.0"
 description = "SMT-based guardrail SAST for AWS SCP/RCP JSON (baseline + regression checks)"
 readme = "README.md"

@@ -1,0 +1,52 @@
+# Publish `invariant-sast` to PyPI via Trusted Publishing (OIDC) -- no API
+# token stored in secrets. Register this workflow as a trusted publisher at
+# https://pypi.org/manage/project/invariant-sast/settings/publishing/ (or,
+# before the project exists on PyPI,
+# https://pypi.org/manage/account/publishing/):
+#   PyPI project name:  invariant-sast   (import name/CLI command stay `invariant`)
+#   Owner:               Ikurira
+#   Repository name:     invariant
+#   Workflow name:        publish.yml
+#   Environment name:    pypi   (must match the `environment:` below)
+#
+# Triggered by publishing a GitHub Release. Tag the release to match the
+# version in pyproject.toml (e.g. tag v0.1.0 for version = "0.1.0").
+
+name: Publish to PyPI
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install --quiet build
+
+      - run: python -m build
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write   # required for trusted publishing, nothing else needed
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - uses: pypa/gh-action-pypi-publish@release/v1
