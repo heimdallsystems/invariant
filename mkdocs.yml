@@ -1,0 +1,52 @@
+site_name: Invariant
+site_description: SMT-based guardrail SAST for AWS Service Control Policies (SCPs) and Resource Control Policies (RCPs)
+site_url: https://ikurira.github.io/invariant/
+repo_name: Ikurira/invariant
+repo_url: https://github.com/Ikurira/invariant
+edit_uri: edit/main/docs/
+
+theme:
+  name: material
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.instant
+    - navigation.tracking
+    - navigation.tabs
+    - navigation.top
+    - content.code.copy
+    - content.action.edit
+  icon:
+    repo: fontawesome/brands/github
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.highlight
+  - tables
+  - toc:
+      permalink: true
+
+nav:
+  - Home: index.md
+  - Getting started: getting-started.md
+  - CLI reference: cli-reference.md
+  - Checks: checks.md
+  - Suppressions: suppressions.md
+  - How the solver works: how-it-works.md
+  - CI integration: ci-integration.md
+  - Development: development.md

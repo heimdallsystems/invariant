@@ -19,9 +19,16 @@ classifiers = [
     "Topic :: Software Development :: Quality Assurance",
 ]
 
+[project.optional-dependencies]
+docs = [
+    "mkdocs>=1.6",
+    "mkdocs-material>=9.5",
+]
+
 [project.urls]
-Homepage = "https://github.com/YOUR_ORG/invariant"
-Issues = "https://github.com/YOUR_ORG/invariant/issues"
+Homepage = "https://ikurira.github.io/invariant/"
+Issues = "https://github.com/Ikurira/invariant/issues"
+Repository = "https://github.com/Ikurira/invariant"
 
 [project.scripts]
 invariant = "invariant.cli:main"

@@ -4,3 +4,4 @@ __pycache__/
 solver-results/
 solver-results-baseline/
 manifest.json
+site/
