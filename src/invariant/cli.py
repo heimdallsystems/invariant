@@ -48,6 +48,7 @@ import sys
 import invariant.checks.scp_permissiveness_regression  # noqa: F401  (import = register)
 import invariant.checks.iam_policy_permissiveness_regression  # noqa: F401
 import invariant.checks.iam_privilege_escalation  # noqa: F401
+import invariant.checks.ast_unconstrained_operator_diff  # noqa: F401
 from invariant.checks.base import all_checks, Severity
 
 
