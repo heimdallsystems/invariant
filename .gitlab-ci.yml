@@ -1,9 +1,9 @@
 ## Invariant — SMT-based guardrail SAST — GitLab CI
 ##
 ## Assumes:
-##   - the `invariant` package (pyproject.toml at the root of the invariant/
-##     tool repo) is installable via $INVARIANT_PIP_SPEC below -- point that
-##     at your actual package source: a private index (set PIP_INDEX_URL),
+##   - the `invariant-sast` package is installable via $INVARIANT_PIP_SPEC
+##     below -- it defaults to the public PyPI package; override it to point
+##     at your own source instead: a private index (set PIP_INDEX_URL),
 ##     your GitLab group's PyPI package registry, or a `git+https://` URL.
 ##   - reference/  holds the last-known-good (or LZAUC-upstream) copies of
 ##     every service-control-policies/*.json, rcp-policies/*.json, and
@@ -41,7 +41,7 @@ variables:
   SOLVER_TIMEOUT_SECONDS: "60"     # per-file hard timeout, see run_checks.sh
   REFERENCE_DIR: "reference"
   CANDIDATE_DIRS: "service-control-policies rcp-policies iam-policies declarative-policies"
-  INVARIANT_PIP_SPEC: "invariant"   # override: private index, package registry, or git+https URL
+  INVARIANT_PIP_SPEC: "invariant-sast"   # override: private index, package registry, or git+https URL
 
 # --- Tier 1: fast schema/presence checks, no solver -------------------------
 schema:validate:

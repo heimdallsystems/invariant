@@ -96,11 +96,11 @@ Requires Python 3.10+. `z3-solver` is installed automatically as a
 dependency.
 
 ```bash
-# from a package index, once published
-pip install invariant
+# from PyPI (distribution name is invariant-sast; the CLI and import stay `invariant`)
+pip install invariant-sast
 
 # or straight from source
-git clone https://github.com/YOUR_ORG/invariant.git
+git clone https://github.com/Ikurira/invariant.git
 cd invariant
 pip install .
 ```

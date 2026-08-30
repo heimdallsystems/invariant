@@ -6,10 +6,10 @@
 # GitLab instead.)
 #
 # Assumes:
-#   - the `invariant` package is installable via $INVARIANT_PIP_SPEC below --
-#     point that at your actual package source: a private index (set
-#     PIP_INDEX_URL), your org's PyPI package registry, or a `git+https://`
-#     URL.
+#   - the `invariant-sast` package is installable via $INVARIANT_PIP_SPEC
+#     below -- it defaults to the public PyPI package; override it to point
+#     at your own source instead: a private index (set PIP_INDEX_URL), your
+#     org's PyPI package registry, or a `git+https://` URL.
 #   - reference/  holds the last-known-good (or LZAUC-upstream) copies of
 #     every service-control-policies/*.json, rcp-policies/*.json, and
 #     iam-policies/*.json file, mirroring that subdirectory under reference/
@@ -35,7 +35,7 @@ on:
     branches: [main]
 
 env:
-  INVARIANT_PIP_SPEC: invariant   # override: private index, package registry, or git+https URL
+  INVARIANT_PIP_SPEC: invariant-sast   # override: private index, package registry, or git+https URL
   # NotResource/NotAction-heavy IAM policies (permission boundaries) solve
   # noticeably slower than a typical SCP -- see README's "Performance"
   # section. Raise this if either job starts timing out once
