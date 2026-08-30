@@ -16,6 +16,7 @@ policy, see INV_AWS_003.
 """
 from invariant.checks.base import BaseCheck, CheckResult, Severity, register
 from invariant.policy_check import find_grant_regression, _model_to_jsonable
+from invariant.policy_dirs import IAM_DIR
 
 
 @register
@@ -40,7 +41,7 @@ class IamPolicyPermissivenessRegression(BaseCheck):
 
     def applies_to(self, file_path: str) -> bool:
         parts = file_path.replace("\\", "/").split("/")
-        return "iam-policies" in parts
+        return IAM_DIR in parts
 
     def run(self, reference: dict, candidate: dict, file_path: str) -> CheckResult:
         model = find_grant_regression(

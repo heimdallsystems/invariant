@@ -26,6 +26,7 @@ reference to diff against).
 """
 from invariant.ast_diff import detect_ast_regression_with_degradation
 from invariant.checks.base import BaseCheck, CheckResult, Severity, register
+from invariant.policy_dirs import SCANNED_SUBDIRS
 
 
 @register
@@ -53,8 +54,7 @@ class AstUnconstrainedOperatorDiff(BaseCheck):
 
     def applies_to(self, file_path: str) -> bool:
         parts = file_path.replace("\\", "/").split("/")
-        return bool({"service-control-policies", "rcp-policies",
-                      "iam-policies"} & set(parts))
+        return bool(set(SCANNED_SUBDIRS) & set(parts))
 
     def run(self, reference: dict, candidate: dict, file_path: str) -> CheckResult:
         findings = detect_ast_regression_with_degradation(reference, candidate)

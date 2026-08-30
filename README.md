@@ -57,9 +57,15 @@ below for why that second half matters as much as the first.
   property, no reference needed: proves whether a single IAM policy grants
   a known escalation primitive on any resource.
 
-Two subcommands drive all three:
+Three subcommands drive all three:
 
-- **`invariant scan`** — baseline check. Point it at a directory and it
+- **`invariant run`** — the default entry point. Always runs the baseline
+  tier (below); also runs the diff tier when you pass `--diff-base` (e.g.
+  `--diff-base origin/main`). One command, no need to decide up front
+  whether you want `scan` or `regression` — it runs whichever tiers have
+  something to check.
+
+- **`invariant scan`** — baseline tier. Point it at a directory and it
   walks `service-control-policies/`, `rcp-policies/`, and `iam-policies/`.
   Files with a same-named counterpart in the **default AWS Landing Zone
   Accelerator (LZA) guardrails** bundled with the package
@@ -70,15 +76,18 @@ Two subcommands drive all three:
   reference file, no manifest, nothing to set up — this is the "just run it"
   entry point.
 
-- **`invariant regression --manifest manifest.json`** — diff check. Proves
+- **`invariant regression --manifest manifest.json`** — diff tier. Proves
   each candidate still denies/grants exactly what *its own paired reference*
   did. Use this when you want to check against something other than the
   bundled LZA defaults — your org's own last-known-good policies, an
   upstream release, whatever you supply. `build_manifest.py` derives the
   pairing from a git diff so you don't hand-maintain it (see
-  [CI integration](#ci-integration)).
+  [CI integration](#ci-integration)). `invariant run --diff-base <ref>`
+  does this same pairing internally, so `regression` is mainly useful when
+  you want the diff tier as its own CI job/artifact, independent of the
+  baseline tier (see [CI integration](#ci-integration)).
 
-Both share the same check registry, output formats, and exit-code
+All three share the same check registry, output formats, and exit-code
 convention: `0` = no findings (or `--soft-fail`), `1` = a check failed.
 
 ## Install
@@ -103,7 +112,7 @@ From the root of your AWS LZA config repo (wherever your
 directories live):
 
 ```bash
-invariant scan
+invariant run
 ```
 
 ```
@@ -111,6 +120,14 @@ invariant scan
 [PASS] INV_AWS_001  service-control-policies/lza-quarantine.json         No regression found.
 [FAIL (critical)] INV_AWS_001  service-control-policies/lza-quarantine.json  Candidate no longer denies a request the reference denied: {'action': '""', 'resource': '""', 'principal': '""'}
 [FAIL (high)] INV_AWS_003  iam-policies/end-user-boundary.json  Grants 7 privilege-escalation primitive(s) unconditionally on at least one resource: iam:CreatePolicyVersion, iam:AttachRolePolicy, iam:PutRolePolicy, iam:UpdateAssumeRolePolicy, iam:PassRole, sts:AssumeRole, iam:SetDefaultPolicyVersion
+```
+
+That's the baseline tier — no reference file, no manifest, nothing to set
+up first. To also prove every file changed since some ref still holds up
+against its own `reference/` counterpart, add `--diff-base`:
+
+```bash
+invariant run --diff-base origin/main
 ```
 
 A `FAIL` line means Z3 found a concrete counterexample: a request the
@@ -123,17 +140,18 @@ check fails, so it's CI-friendly out of the box.
 Only files with a same-named counterpart in the bundled baseline catalog get
 `INV_AWS_001`/`002` (the relative checks) — a custom SCP or IAM policy with
 no LZA-default analog has nothing to prove *that* property against yet;
-`invariant scan` reports it (to stderr) as skipped for those checks rather
-than silently ignoring it, and pair it against something of your own
-choosing with `invariant regression` instead. `INV_AWS_003` doesn't need a
-baseline at all, so it still runs on every `iam-policies/*.json` file found
-— that's true for the vast majority of real-world `iam-policies/` content,
-since custom identity policies and permission boundaries are org-specific
-by nature, not part of any shipped default catalog.
+`invariant run`/`scan` reports it (to stderr) as skipped for those checks
+rather than silently ignoring it, and pair it against something of your own
+choosing with `invariant run --diff-base <ref>` (or `invariant regression`)
+instead. `INV_AWS_003` doesn't need a baseline at all, so it still runs on
+every `iam-policies/*.json` file found — that's true for the vast majority
+of real-world `iam-policies/` content, since custom identity policies and
+permission boundaries are org-specific by nature, not part of any shipped
+default catalog.
 
 ## CLI reference
 
-Both subcommands accept:
+All three subcommands accept:
 
 | Flag | Default | Meaning |
 |---|---|---|
@@ -143,6 +161,14 @@ Both subcommands accept:
 | `--soft-fail` | off | Always exit `0`, regardless of findings |
 | `--compact` | off | Suppress `PASS` lines in `cli` output |
 | `--out-dir` | `solver-results` | Where `json`/`sarif` reports get written |
+
+`invariant run` also takes:
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--directory`, `-d` | `.` | Root to scan for `service-control-policies/`, `rcp-policies/`, and `iam-policies/` |
+| `--diff-base` | none | Git ref to diff against (e.g. `origin/main`) — enables the regression tier; omit to run the baseline tier only |
+| `--reference-dir` | `reference` | Where last-known-good copies live, used only when `--diff-base` is given |
 
 `invariant scan` also takes:
 
@@ -311,6 +337,38 @@ Both templates now include `iam-policies` in their candidate directories;
 `REFERENCE_DIR`/`reference/` only needs an `iam-policies/` counterpart for
 the specific files you want an `INV_AWS_002` grant-regression proof on —
 `INV_AWS_003` runs regardless.
+
+### Why two separate jobs instead of one `invariant run`
+
+The templates run `scan` and `regression` as independent jobs rather than a
+single `invariant run --diff-base ...` call, because in CI they differ on
+two axes that are each worth keeping separate:
+
+- **What they prove against.** `guardrail-baseline` (`invariant scan`)
+  checks every file against the **LZA default guardrails bundled with the
+  package itself** — a fixed reference nobody in your org maintains, so it
+  needs no setup and still catches drift even when nothing changed in this
+  MR/PR (e.g. a package upgrade moves the bundled catalog, or a file was
+  never part of that catalog to begin with — `INV_AWS_003` still runs on
+  it). `guardrail-regression` (`invariant regression`) checks only the
+  files this MR/PR touched against **your own `reference/` copies** — the
+  thing you actually approved and updated last time a widening was
+  intentional. One answers "do we still match the reference architecture,
+  everywhere, right now"; the other answers "did this diff make something
+  worse relative to what we already signed off on."
+- **What they cost.** `scan` is a full sweep, every run, independent of git
+  history. `regression` is diff-scoped (`build_manifest.py` derives the
+  pairing from `git diff` against the target branch), which keeps runtime
+  bounded as the number of guardrail files grows — the split lets you tune
+  `SOLVER_TIMEOUT_SECONDS`/job timeouts for each independently instead of
+  one job absorbing both costs.
+
+Splitting them also means GitLab/GitHub attribute each job's findings to
+its own `solver-results*/results.sarif` artifact, so a baseline drift and a
+this-PR regression don't get conflated in the same report. For local,
+ad-hoc use where that separation doesn't matter, `invariant run
+--diff-base <ref>` runs both tiers in one command — see
+[Quickstart](#quickstart).
 
 Note that `reference/` mirrors the candidate subdirectory now
 (`reference/iam-policies/foo.json`, not a flat `reference/foo.json`) — see

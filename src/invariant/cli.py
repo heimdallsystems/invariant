@@ -1,12 +1,18 @@
 """
 Invariant -- SMT-based guardrail SAST.
 
-Two subcommands, sharing the same check registry (checks/), output formats
-(cli/json/sarif), and exit-code convention (0 = no findings or --soft-fail,
-1 = a check failed):
+Three subcommands, sharing the same check registry (checks/), output
+formats (cli/json/sarif), and exit-code convention (0 = no findings or
+--soft-fail, 1 = a check failed):
+
+  invariant run
+      Default entry point -- runs both tiers below in one command instead
+      of making the operator choose between them. Always runs the baseline
+      scan; also runs the diff-scoped regression tier when --diff-base is
+      given. This is what CI and a first-time operator should reach for.
 
   invariant scan
-      Baseline check. Walks --directory for service-control-policies/,
+      Baseline tier. Walks --directory for service-control-policies/,
       rcp-policies/, and iam-policies/ JSON files. Files with a same-named
       counterpart in the guardrail catalog bundled with this package
       (baseline/, copied from the LZA universal-configuration defaults) get
@@ -19,11 +25,16 @@ Two subcommands, sharing the same check registry (checks/), output formats
       this is the "just run it" entry point.
 
   invariant regression
-      Diff check. Reads --manifest (see build_manifest.py, which derives
+      Diff tier. Reads --manifest (see build_manifest.py, which derives
       pairings from a git diff) and proves each candidate still denies/
       grants exactly what its *paired* reference did. Use this when you
       want to check against something other than the bundled baseline
       (e.g. your org's own last-known-good, or an upstream LZAUC release).
+
+`scan` and `regression` remain as standalone subcommands because CI splits
+them into separate, independently-scheduled jobs (see .gitlab-ci.yml /
+.github/workflows/invariant.yml) -- `run` is the single-command equivalent
+for local, ad-hoc use.
 
 CLI conventions deliberately mirror Checkov:
   --check               run only these check IDs (comma-separated)
@@ -43,25 +54,20 @@ This key is stripped before the policy is handed to the solver.
 import argparse
 import json
 import os
+import subprocess
 import sys
 
 import invariant.checks.scp_permissiveness_regression  # noqa: F401  (import = register)
 import invariant.checks.iam_policy_permissiveness_regression  # noqa: F401
 import invariant.checks.iam_privilege_escalation  # noqa: F401
 import invariant.checks.ast_unconstrained_operator_diff  # noqa: F401
+from invariant.build_manifest import build_manifest
 from invariant.checks.base import all_checks, Severity
+from invariant.policy_dirs import SCANNED_SUBDIRS
 
 
 SEVERITY_ORDER = [Severity.CRITICAL, Severity.HIGH, Severity.MEDIUM,
                    Severity.LOW, Severity.INFO]
-
-# Same directories CI already scopes guardrail scans to (see
-# .gitlab-ci.yml CANDIDATE_DIRS), plus iam-policies/ for the Allow-based
-# identity/permission-boundary checks (INV_AWS_002, INV_AWS_003).
-# declarative-policies is deliberately excluded here: its @@assign schema
-# isn't a Deny/Allow-statement IAM policy, so no registered check's
-# applies_to() matches it anyway.
-SCANNED_SUBDIRS = ("service-control-policies", "rcp-policies", "iam-policies")
 
 BASELINE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "baseline")
 
@@ -263,6 +269,41 @@ def _emit_and_exit_code(results, args) -> int:
     return 1 if failed else 0
 
 
+def cmd_run(args) -> int:
+    """
+    The default entry point: always runs the baseline scan tier, plus the
+    diff-scoped regression tier whenever --diff-base is given, so the
+    operator doesn't have to know in advance to pick `scan` vs
+    `regression` -- both run in one command when there's something for
+    each to check.
+    """
+    only = args.check.split(",") if args.check else None
+    skip = args.skip_check.split(",") if args.skip_check else None
+
+    scan_entries = discover_candidates(args.directory)
+    if not scan_entries:
+        print(f"No SCP/RCP/IAM policy files were found under "
+              f"{args.directory}", file=sys.stderr)
+    results = run(scan_entries, only_checks=only, skip_checks=skip)
+
+    if args.diff_base:
+        try:
+            regression_entries = build_manifest(
+                args.diff_base, args.reference_dir, list(SCANNED_SUBDIRS))
+        except subprocess.CalledProcessError as e:
+            print(f"Could not diff against {args.diff_base!r}: {e}",
+                  file=sys.stderr)
+            return 1
+        results += run(regression_entries, only_checks=only, skip_checks=skip)
+    else:
+        print("Skipping the regression tier (no --diff-base given) -- "
+              "pass e.g. --diff-base origin/main to also prove every "
+              "file changed since that ref still denies/grants exactly "
+              "what its reference/ counterpart did.", file=sys.stderr)
+
+    return _emit_and_exit_code(results, args)
+
+
 def cmd_scan(args) -> int:
     only = args.check.split(",") if args.check else None
     skip = args.skip_check.split(",") if args.skip_check else None
@@ -286,6 +327,27 @@ def main():
     parser = argparse.ArgumentParser(
         prog="invariant", description="Invariant: SMT-based guardrail SAST")
     subparsers = parser.add_subparsers(dest="command", required=True)
+
+    run_parser = subparsers.add_parser(
+        "run",
+        help="Default entry point: baseline scan always, plus a "
+             "diff-scoped regression check when --diff-base is given -- "
+             "runs both tiers in one command instead of choosing between "
+             "`scan` and `regression`")
+    run_parser.add_argument(
+        "--directory", "-d", default=".",
+        help="root to scan for service-control-policies/, rcp-policies/, "
+             "and iam-policies/ (default: current directory)")
+    run_parser.add_argument(
+        "--diff-base", default=None,
+        help="git ref to diff against for the regression tier (e.g. "
+             "origin/main); omit to run the baseline scan tier only")
+    run_parser.add_argument(
+        "--reference-dir", default="reference",
+        help="directory holding last-known-good reference/ copies, used "
+             "only when --diff-base is given (default: reference)")
+    _add_common_args(run_parser)
+    run_parser.set_defaults(func=cmd_run)
 
     scan_parser = subparsers.add_parser(
         "scan",

@@ -6,6 +6,7 @@ policy explicitly denied -- i.e. the guardrail got weaker.
 """
 from invariant.checks.base import BaseCheck, CheckResult, Severity, register
 from invariant.policy_check import find_permissiveness_regression, _model_to_jsonable
+from invariant.policy_dirs import SCP_DIR, RCP_DIR
 
 
 @register
@@ -32,7 +33,7 @@ class ScpPermissivenessRegression(BaseCheck):
         # just need service-control-policies/ or rcp-policies/ anywhere in
         # the path, not necessarily at the front of it.
         parts = file_path.replace("\\", "/").split("/")
-        return "service-control-policies" in parts or "rcp-policies" in parts
+        return SCP_DIR in parts or RCP_DIR in parts
 
     def run(self, reference: dict, candidate: dict, file_path: str) -> CheckResult:
         model = find_permissiveness_regression(

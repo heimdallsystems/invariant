@@ -20,6 +20,7 @@ not an assumption that every hit is a bug; INV_AWS_002 is what catches an
 """
 from invariant.checks.base import BaseCheck, CheckResult, Severity, register
 from invariant.policy_check import find_privilege_escalation
+from invariant.policy_dirs import IAM_DIR
 
 
 @register
@@ -46,7 +47,7 @@ class IamPrivilegeEscalation(BaseCheck):
 
     def applies_to(self, file_path: str) -> bool:
         parts = file_path.replace("\\", "/").split("/")
-        return "iam-policies" in parts
+        return IAM_DIR in parts
 
     def run(self, reference, candidate: dict, file_path: str) -> CheckResult:
         findings = find_privilege_escalation(

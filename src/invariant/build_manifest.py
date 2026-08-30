@@ -23,10 +23,11 @@ import os
 import subprocess
 import sys
 
-# Kept in sync with cli.SCANNED_SUBDIRS by convention rather than imported,
-# so this stays a standalone git-diff utility with no dependency on the
-# check registry cli.py pulls in.
-KNOWN_SUBDIRS = ("service-control-policies", "rcp-policies", "iam-policies")
+# policy_dirs.py is a dependency-free leaf module (no z3, no check
+# registry), so importing it here doesn't drag in cli.py's heavier imports
+# -- this stays a standalone git-diff utility while sharing one source of
+# truth for the policy-type subdirectory names.
+from invariant.policy_dirs import SCANNED_SUBDIRS as KNOWN_SUBDIRS
 
 
 def changed_files(diff_base: str, candidate_dirs: list[str]) -> list[str]:
