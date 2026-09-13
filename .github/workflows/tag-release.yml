@@ -1,0 +1,54 @@
+# Auto-tags and releases a version bump landed on main, so publish.yml's
+# `release: published` trigger fires without a manual `git tag` + `gh
+# release create` step every time pyproject.toml's version changes.
+#
+# Idempotent by construction: it only creates vX.Y.Z when that tag doesn't
+# already exist, so a push to main that touches pyproject.toml but doesn't
+# actually change the version (e.g. a dependency bump) is a no-op here.
+
+name: Tag release on version bump
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - pyproject.toml
+
+permissions:
+  contents: write
+
+jobs:
+  tag-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read version from pyproject.toml
+        id: version
+        run: |
+          version=$(grep -m1 '^version = ' pyproject.toml | sed -E 's/version = "(.*)"/\1/')
+          if [ -z "$version" ]; then
+            echo "Could not find a version = \"...\" line in pyproject.toml" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Skip if this version is already tagged
+        id: check
+        run: |
+          if git ls-remote --tags origin "refs/tags/v${{ steps.version.outputs.version }}" | grep -q .; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create tag + GitHub release
+        if: steps.check.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "v${{ steps.version.outputs.version }}" \
+            --repo "${{ github.repository }}" \
+            --title "v${{ steps.version.outputs.version }}" \
+            --generate-notes \
+            --target "${{ github.sha }}"
