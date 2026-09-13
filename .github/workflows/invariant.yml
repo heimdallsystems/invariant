@@ -34,6 +34,16 @@ on:
   push:
     branches: [main]
 
+# Explicit, since some org/repo defaults restrict GITHUB_TOKEN to
+# read-only: github/codeql-action/upload-sarif needs security-events:write
+# to post results, plus actions:read to look up the current workflow run
+# (without it that lookup 500s as "Resource not accessible by integration"
+# and fails the whole job, not just a warning).
+permissions:
+  contents: read
+  security-events: write
+  actions: read
+
 env:
   INVARIANT_PIP_SPEC: invariant-sast   # override: private index, package registry, or git+https URL
   # NotResource/NotAction-heavy IAM policies (permission boundaries) solve
