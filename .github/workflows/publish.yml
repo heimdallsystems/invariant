@@ -11,20 +11,29 @@
 #
 # Triggered by publishing a GitHub Release (tag matching the version in
 # pyproject.toml, e.g. tag v0.1.0 for version = "0.1.0") -- for a manual
-# release -- or called directly as a reusable workflow by
-# tag-release.yml, which creates that release automatically on a
-# pyproject.toml version bump. It's invoked directly (`uses:`) rather than
-# left to fire off this workflow's own `release: published` trigger
-# because a release created via the default GITHUB_TOKEN, as
-# tag-release.yml's `gh release create` does, deliberately does not
-# cascade into triggering other workflows.
+# release -- or via workflow_dispatch, dispatched by tag-release.yml
+# (`gh workflow run publish.yml --ref vX.Y.Z`) once it creates that
+# release automatically on a pyproject.toml version bump.
+#
+# tag-release.yml dispatches this explicitly rather than relying on this
+# workflow's own `release: published` trigger to fire, because a release
+# created via the default GITHUB_TOKEN (as its `gh release create` does)
+# deliberately does not cascade into triggering other workflows --
+# workflow_dispatch/repository_dispatch are the documented exception to
+# that restriction, so an explicit dispatch is what actually runs.
+#
+# Do NOT turn this into a reusable workflow (`workflow_call`) invoked via
+# `uses:` from tag-release.yml instead -- PyPI's Trusted Publishing does
+# not support reusable workflows (the OIDC token's workflow claim ends up
+# pointing at the caller, not this file, and publishing fails). Learned
+# the hard way: see the 0.3.1 release.
 
 name: Publish to PyPI
 
 on:
   release:
     types: [published]
-  workflow_call:
+  workflow_dispatch:
 
 jobs:
   build:

@@ -6,13 +6,22 @@
 # already exist, so a push to main that touches pyproject.toml but doesn't
 # actually change the version (e.g. a dependency bump) is a no-op here.
 #
-# publish.yml is invoked directly as a reusable workflow (`uses:` below),
-# not left to fire off its own `release: published` trigger -- a release
-# created via the default GITHUB_TOKEN (as gh release create below does)
-# deliberately does NOT cascade into triggering other workflows, to guard
-# against recursive runs. A direct `uses:` call is a job in *this* run, so
-# that restriction doesn't apply and publish.yml still runs when someone
-# publishes a release by hand instead of through this workflow.
+# publish.yml is dispatched explicitly (`gh workflow run`, workflow_dispatch)
+# rather than left to fire off its own `release: published` trigger, and
+# NOT called as a reusable workflow (`uses:`) either -- both were tried and
+# both are broken for this:
+#   - `release: published`: a release created via the default GITHUB_TOKEN
+#     (gh release create below) deliberately does not cascade into
+#     triggering other workflows, to guard against recursive runs.
+#   - `uses:` (reusable workflow call): runs, but PyPI Trusted Publishing
+#     does not support reusable workflows -- the OIDC token's workflow
+#     claim points at the caller (this file), not publish.yml, so PyPI's
+#     publish step fails to be trusted at that point. Learned the hard way
+#     on the 0.3.1 release.
+# workflow_dispatch is the documented exception to the no-cascade
+# restriction (along with repository_dispatch), and an explicit dispatch
+# is still a distinct, top-level run of publish.yml -- not a nested call --
+# so Trusted Publishing sees exactly the workflow it was registered for.
 
 name: Tag release on version bump
 
@@ -24,12 +33,11 @@ on:
 
 permissions:
   contents: write
+  actions: write   # required to dispatch publish.yml via `gh workflow run`
 
 jobs:
   tag-release:
     runs-on: ubuntu-latest
-    outputs:
-      created: ${{ steps.check.outputs.created }}
     steps:
       - uses: actions/checkout@v4
 
@@ -63,10 +71,11 @@ jobs:
             --generate-notes \
             --target "${{ github.sha }}"
 
-  publish:
-    needs: tag-release
-    if: needs.tag-release.outputs.created == 'true'
-    permissions:
-      id-token: write   # required for publish.yml's Trusted Publishing step
-      contents: read
-    uses: ./.github/workflows/publish.yml
+      - name: Dispatch publish.yml for the new tag
+        if: steps.check.outputs.created == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh workflow run publish.yml \
+            --repo "${{ github.repository }}" \
+            --ref "v${{ steps.version.outputs.version }}"
