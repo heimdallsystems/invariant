@@ -75,6 +75,11 @@ jobs:
 
       - name: Upload SARIF to code scanning
         if: always()
+        # Code scanning is a separate, opt-in repo feature (Advanced
+        # Security, paid on a private repo) -- this template shouldn't
+        # force that on, so a repo without it enabled still gets a green
+        # build from the scan step itself instead of a hard failure here.
+        continue-on-error: true
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: solver-results-baseline/results.sarif
@@ -126,6 +131,11 @@ jobs:
 
       - name: Upload SARIF to code scanning
         if: always()
+        # Code scanning is a separate, opt-in repo feature (Advanced
+        # Security, paid on a private repo) -- this template shouldn't
+        # force that on, so a repo without it enabled still gets a green
+        # build from the scan step itself instead of a hard failure here.
+        continue-on-error: true
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: solver-results/results.sarif
