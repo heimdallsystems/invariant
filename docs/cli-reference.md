@@ -15,7 +15,7 @@ Both subcommands accept:
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--directory`, `-d` | `.` | Root to scan for `service-control-policies/` and `rcp-policies/` |
+| `--directory`, `-d` | `.` | Root to recursively scan for `service-control-policies/`, `rcp-policies/`, and `iam-policies/` directories at any depth |
 
 `invariant regression` also takes:
 

@@ -47,6 +47,30 @@ def test_reference_free_check_runs_without_baseline_reference_needing_ones_skip(
                for line in skip_lines)
 
 
+def test_policy_dirs_are_found_at_any_depth_not_just_as_direct_children(tmp_path):
+    write_policy(
+        tmp_path / "modules" / "base" / "default" / "iam-policies" / "nested-policy.json",
+        [{"Effect": "Allow", "Action": "iam:PassRole", "Resource": "*"}],
+    )
+
+    entries = discover_candidates(str(tmp_path))
+    assert len(entries) == 1
+    assert entries[0]["reference"] is None
+    assert entries[0]["candidate"].endswith("nested-policy.json")
+
+
+def test_git_internals_are_not_descended_into(tmp_path):
+    # A stray "iam-policies"-named path inside .git (e.g. a ref name or
+    # object dir) must never be treated as a real policy directory.
+    write_policy(
+        tmp_path / ".git" / "iam-policies" / "not-a-real-policy.json",
+        [{"Effect": "Allow", "Action": "iam:PassRole", "Resource": "*"}],
+    )
+
+    entries = discover_candidates(str(tmp_path))
+    assert entries == []
+
+
 def test_suppression_silences_privilege_escalation_finding(tmp_path):
     write_policy(
         tmp_path / "iam-policies" / "custom-role-policy.json",

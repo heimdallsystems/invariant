@@ -66,9 +66,11 @@ Three subcommands drive all three:
   something to check.
 
 - **`invariant scan`** — baseline tier. Point it at a directory and it
-  walks `service-control-policies/`, `rcp-policies/`, and `iam-policies/`.
-  Files with a same-named counterpart in the **default AWS Landing Zone
-  Accelerator (LZA) guardrails** bundled with the package
+  recursively walks it, Checkov-style, looking for
+  `service-control-policies/`, `rcp-policies/`, and `iam-policies/`
+  directories at any depth — they don't need to be direct children of the
+  path you pass. Files with a same-named counterpart in the **default AWS
+  Landing Zone Accelerator (LZA) guardrails** bundled with the package
   (`src/invariant/baseline/`) get the full relative-check treatment
   (001/002). Files with no baseline counterpart — the normal case for
   `iam-policies/`, since custom IAM policies aren't part of the LZA default
@@ -166,7 +168,7 @@ All three subcommands accept:
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--directory`, `-d` | `.` | Root to scan for `service-control-policies/`, `rcp-policies/`, and `iam-policies/` |
+| `--directory`, `-d` | `.` | Root to recursively scan for `service-control-policies/`, `rcp-policies/`, and `iam-policies/` directories at any depth |
 | `--diff-base` | none | Git ref to diff against (e.g. `origin/main`) — enables the regression tier; omit to run the baseline tier only |
 | `--reference-dir` | `reference` | Where last-known-good copies live, used only when `--diff-base` is given |
 
@@ -174,7 +176,7 @@ All three subcommands accept:
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--directory`, `-d` | `.` | Root to scan for `service-control-policies/`, `rcp-policies/`, and `iam-policies/` |
+| `--directory`, `-d` | `.` | Root to recursively scan for `service-control-policies/`, `rcp-policies/`, and `iam-policies/` directories at any depth |
 
 `invariant regression` also takes:
 

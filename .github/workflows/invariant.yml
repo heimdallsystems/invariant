@@ -34,6 +34,16 @@ on:
   push:
     branches: [main]
 
+# Explicit, since some org/repo defaults restrict GITHUB_TOKEN to
+# read-only: github/codeql-action/upload-sarif needs security-events:write
+# to post results, plus actions:read to look up the current workflow run
+# (without it that lookup 500s as "Resource not accessible by integration"
+# and fails the whole job, not just a warning).
+permissions:
+  contents: read
+  security-events: write
+  actions: read
+
 env:
   INVARIANT_PIP_SPEC: invariant-sast   # override: private index, package registry, or git+https URL
   # NotResource/NotAction-heavy IAM policies (permission boundaries) solve
@@ -65,6 +75,11 @@ jobs:
 
       - name: Upload SARIF to code scanning
         if: always()
+        # Code scanning is a separate, opt-in repo feature (Advanced
+        # Security, paid on a private repo) -- this template shouldn't
+        # force that on, so a repo without it enabled still gets a green
+        # build from the scan step itself instead of a hard failure here.
+        continue-on-error: true
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: solver-results-baseline/results.sarif
@@ -116,6 +131,11 @@ jobs:
 
       - name: Upload SARIF to code scanning
         if: always()
+        # Code scanning is a separate, opt-in repo feature (Advanced
+        # Security, paid on a private repo) -- this template shouldn't
+        # force that on, so a repo without it enabled still gets a green
+        # build from the scan step itself instead of a hard failure here.
+        continue-on-error: true
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: solver-results/results.sarif
