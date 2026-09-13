@@ -50,9 +50,7 @@ class IamPrivilegeEscalation(BaseCheck):
         return IAM_DIR in parts
 
     def run(self, reference, candidate: dict, file_path: str) -> CheckResult:
-        findings = find_privilege_escalation(
-            candidate, label=f"{self.check_id}: {file_path}"
-        )
+        findings = find_privilege_escalation(candidate)
         if not findings:
             return CheckResult(
                 check_id=self.check_id, passed=True, severity=self.severity,

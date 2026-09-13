@@ -44,9 +44,7 @@ class IamPolicyPermissivenessRegression(BaseCheck):
         return IAM_DIR in parts
 
     def run(self, reference: dict, candidate: dict, file_path: str) -> CheckResult:
-        model = find_grant_regression(
-            reference, candidate, label=f"{self.check_id}: {file_path}"
-        )
+        model = find_grant_regression(reference, candidate)
         if model is None:
             return CheckResult(
                 check_id=self.check_id, passed=True, severity=self.severity,

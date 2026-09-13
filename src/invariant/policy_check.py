@@ -16,6 +16,7 @@ Every finding is surfaced as a concrete counterexample, not a vague warning.
 Requires: pip install z3-solver
 """
 import json
+import sys
 from dataclasses import dataclass
 from z3 import (
     String, Bool, Solver, sat, InRe, Not, Or, And, Implies, Star, Concat, Re,
@@ -219,9 +220,26 @@ def condition_predicate(condition: dict, ctx: RequestContext):
             # (GRCFGR, GRKMS) -- verify those findings by hand.
             continue
         else:
-            print(f"WARNING: unhandled condition operator '{op}' -- "
-                  f"treated as non-constraining. Verify manually.")
+            _warn_unhandled_operator(op)
     return And(*clauses) if clauses else True
+
+
+# Printed at most once per operator per process (not once per statement/
+# check/file) -- the same handful of operators recur across every
+# statement in every policy, and a soundness caveat that scrolls past
+# hundreds of times drowns out the actual PASS/FAIL/REGRESSION findings it
+# was meant to flag review of. Emitted on stderr, not stdout, so it never
+# interleaves with -o cli's result lines or pollutes -o json/sarif.
+_WARNED_OPERATORS: set[str] = set()
+
+
+def _warn_unhandled_operator(op: str) -> None:
+    if op in _WARNED_OPERATORS:
+        return
+    _WARNED_OPERATORS.add(op)
+    print(f"WARNING: unhandled condition operator '{op}' -- treated as "
+          f"non-constraining wherever it appears in this run. Verify "
+          f"affected statements manually.", file=sys.stderr)
 
 
 def _action_match(stmt: dict, ctx: RequestContext):
@@ -279,27 +297,22 @@ def policy_grants(policy: dict, ctx: RequestContext):
 
 # ---------------------------------------------------------------------------
 # 4. Regression check: does CANDIDATE permit anything REFERENCE denied?
+#
+# Returns the Z3 model (counterexample) if a regression is found, else
+# None -- callers (checks/scp_permissiveness_regression.py) are
+# responsible for reporting the result; this stays a pure function so
+# there's exactly one place (cli.py) that decides what gets printed and
+# how, instead of the engine and the CLI each narrating the same finding
+# independently and out of sync with each other.
 # ---------------------------------------------------------------------------
-def find_permissiveness_regression(reference: dict, candidate: dict, label=""):
+def find_permissiveness_regression(reference: dict, candidate: dict):
     ctx = RequestContext.fresh()
 
     s = Solver()
     s.add(policy_denies(reference, ctx))
     s.add(Not(policy_denies(candidate, ctx)))
 
-    result = s.check()
-    if result == sat:
-        m = s.model()
-        print(f"[REGRESSION FOUND] {label}")
-        print(f"  action:    {m.eval(ctx.action, model_completion=True)}")
-        print(f"  resource:  {m.eval(ctx.resource, model_completion=True)}")
-        print(f"  principal: {m.eval(ctx.principal, model_completion=True)}")
-        print(f"  -> reference policy denied this; candidate does not.")
-        return m
-    else:
-        print(f"[OK] {label}: no regression found (candidate denies "
-              f"everything the reference denied).")
-        return None
+    return s.model() if s.check() == sat else None
 
 
 def _model_to_jsonable(m):
@@ -319,25 +332,14 @@ def _model_to_jsonable(m):
 # exclusion list quietly losing an entry, or a Condition that scoped
 # iam:PassRole to specific roles getting loosened.
 # ---------------------------------------------------------------------------
-def find_grant_regression(reference: dict, candidate: dict, label=""):
+def find_grant_regression(reference: dict, candidate: dict):
     ctx = RequestContext.fresh()
 
     s = Solver()
     s.add(Not(policy_grants(reference, ctx)))
     s.add(policy_grants(candidate, ctx))
 
-    result = s.check()
-    if result == sat:
-        m = s.model()
-        print(f"[REGRESSION FOUND] {label}")
-        print(f"  action:   {m.eval(ctx.action, model_completion=True)}")
-        print(f"  resource: {m.eval(ctx.resource, model_completion=True)}")
-        print(f"  -> candidate grants this; reference did not.")
-        return m
-    else:
-        print(f"[OK] {label}: no regression found (candidate grants nothing "
-              f"new relative to the reference).")
-        return None
+    return s.model() if s.check() == sat else None
 
 
 # ---------------------------------------------------------------------------
@@ -376,7 +378,7 @@ PRIVILEGE_ESCALATION_ACTIONS = [
 ]
 
 
-def find_privilege_escalation(candidate: dict, label="", actions=None):
+def find_privilege_escalation(candidate: dict, actions=None):
     """
     Returns a list of (action, model) pairs -- one per dangerous action the
     candidate policy grants unconditionally on at least one resource. Each
@@ -390,13 +392,7 @@ def find_privilege_escalation(candidate: dict, label="", actions=None):
         s.add(policy_grants(candidate, ctx))
 
         if s.check() == sat:
-            m = s.model()
-            print(f"[PRIVESC] {label}: grants {action} on "
-                  f"{m.eval(ctx.resource, model_completion=True)}")
-            findings.append((action, m))
-    if not findings:
-        print(f"[OK] {label}: no known privilege-escalation primitive "
-              f"granted unconditionally.")
+            findings.append((action, s.model()))
     return findings
 
 
@@ -419,8 +415,16 @@ def main():
     with open(args.candidate) as f:
         candidate = json.load(f)
 
-    label = f"{args.candidate} vs {args.reference}"
-    model = find_permissiveness_regression(reference, candidate, label=label)
+    model = find_permissiveness_regression(reference, candidate)
+
+    if model is not None:
+        print(f"[REGRESSION FOUND] {args.candidate} vs {args.reference}")
+        for var, value in _model_to_jsonable(model).items():
+            print(f"  {var}: {value}")
+        print(f"  -> reference policy denied this; candidate does not.")
+    else:
+        print(f"[OK] {args.candidate} vs {args.reference}: no regression "
+              f"found (candidate denies everything the reference denied).")
 
     result = {
         "reference": args.reference,

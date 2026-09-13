@@ -266,6 +266,26 @@ def _add_common_args(parser):
     parser.add_argument("--out-dir", default="solver-results")
 
 
+def _print_failure_summary(failed) -> None:
+    """
+    A real regression/privilege-escalation finding is one line among
+    potentially hundreds of [OK]/[PASS] lines and (from the Z3 layer)
+    "unhandled condition operator" caveats -- easy to scroll past. Repeat
+    every failure, most-severe first, in one block at the very end, since
+    that's the last thing a reader sees before the exit code.
+    """
+    if not failed:
+        return
+    failed = sorted(failed, key=lambda r: SEVERITY_ORDER.index(r.severity))
+    print()
+    print("=" * 50)
+    print(f"{len(failed)} check(s) FAILED:")
+    for r in failed:
+        print(f"[{r.severity.value.upper()}] {r.check_id}  {r.file_path}")
+        print(f"    {r.message}")
+    print("=" * 50)
+
+
 def _emit_and_exit_code(results, args) -> int:
     outputs = args.output or ["cli"]
     os.makedirs(args.out_dir, exist_ok=True)
@@ -280,6 +300,8 @@ def _emit_and_exit_code(results, args) -> int:
                 continue
             status = "PASS" if r.passed else f"FAIL ({r.severity.value})"
             print(f"[{status}] {r.check_id}  {r.file_path}  {r.message}")
+
+        _print_failure_summary(failed)
 
     if "json" in outputs:
         path = os.path.join(args.out_dir, "results.json")
