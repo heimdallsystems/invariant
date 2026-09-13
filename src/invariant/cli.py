@@ -12,8 +12,10 @@ formats (cli/json/sarif), and exit-code convention (0 = no findings or
       given. This is what CI and a first-time operator should reach for.
 
   invariant scan
-      Baseline tier. Walks --directory for service-control-policies/,
-      rcp-policies/, and iam-policies/ JSON files. Files with a same-named
+      Baseline tier. Recursively walks --directory, Checkov-style, looking
+      for service-control-policies/, rcp-policies/, and iam-policies/
+      directories at any depth (not just as direct children of --directory)
+      and reading the JSON files inside them. Files with a same-named
       counterpart in the guardrail catalog bundled with this package
       (baseline/, copied from the LZA universal-configuration defaults) get
       the full relative-check treatment (INV_AWS_001/002): Z3 proves the
@@ -86,13 +88,33 @@ def load_manifest(manifest_path: str) -> list[dict]:
         return json.load(f)
 
 
+# Directories that are never worth descending into while looking for
+# service-control-policies/, rcp-policies/, or iam-policies/ -- dotdirs
+# (.git, .terraform, .venv, ...) and common vendored/dependency trees.
+# Pruned during the walk purely for speed on large repos; matching a
+# SCANNED_SUBDIRS name is still name-based, not content-sniffed, so this
+# skip-list is an optimization, not part of the matching logic.
+_SKIP_DIRS = {"node_modules", "__pycache__"}
+
+
 def discover_candidates(directory: str) -> list[dict]:
     """
-    Walk every service-control-policies/, rcp-policies/, and iam-policies/
-    JSON file found under `directory` and pair it with its same-named
-    counterpart in the bundled baseline catalog, if one exists (basename
-    matching, same convention build_manifest.py uses for git-diff-based
-    pairing).
+    Recursively walk `directory` -- Checkov-style, no fixed depth --
+    looking for service-control-policies/, rcp-policies/, and
+    iam-policies/ directories at any depth, and pair each *.json file
+    found directly inside one with its same-named counterpart in the
+    bundled baseline catalog, if one exists (basename matching, same
+    convention build_manifest.py uses for git-diff-based pairing).
+
+    Matching is still purely by directory *name* (not content, unlike
+    Checkov's IaC-type sniffing) -- there's no ambiguity about what a
+    service-control-policies/ directory means the way there is for "is
+    this file Terraform", so a name match is all that's needed. What
+    changes here is *where* that name is allowed to appear: any depth
+    under `directory`, not just as its direct child, so `invariant scan`
+    (or `invariant run`) can be pointed at a repo root the same way
+    `checkov -d .` can, without the caller having to know how deep the
+    policy directories happen to live.
 
     Unlike the old baseline-only discovery, a missing baseline counterpart
     no longer drops the file from the scan entirely -- it's still returned,
@@ -107,14 +129,24 @@ def discover_candidates(directory: str) -> list[dict]:
     candidates = []
     no_baseline = []
 
-    for subdir in SCANNED_SUBDIRS:
-        root = os.path.join(directory, subdir)
-        if not os.path.isdir(root):
+    # os.walk()'s traversal/file order is OS-dependent (whatever readdir()
+    # happens to hand back). Pruning dirs in place (not wrapping the walk
+    # itself in sorted(), which would force it to exhaust -- and therefore
+    # fully descend into -- every directory up front before anything could
+    # be pruned) keeps _SKIP_DIRS effective; candidates/no_baseline are
+    # sorted below so CLI/JSON/SARIF output doesn't reorder itself from run
+    # to run on the same tree.
+    for root, dirs, files in os.walk(directory):
+        dirs[:] = sorted(d for d in dirs if d not in _SKIP_DIRS and not d.startswith("."))
+
+        subdir = os.path.basename(os.path.normpath(root))
+        if subdir not in SCANNED_SUBDIRS:
             continue
-        for entry in sorted(os.listdir(root)):
-            candidate_path = os.path.join(root, entry)
-            if not (entry.endswith(".json") and os.path.isfile(candidate_path)):
+
+        for entry in sorted(files):
+            if not entry.endswith(".json"):
                 continue
+            candidate_path = os.path.join(root, entry)
             baseline_path = os.path.join(BASELINE_DIR, subdir, entry)
             if not os.path.isfile(baseline_path):
                 no_baseline.append(candidate_path)
@@ -124,6 +156,9 @@ def discover_candidates(directory: str) -> list[dict]:
                 "reference": baseline_path,
                 "candidate": candidate_path,
             })
+
+    candidates.sort(key=lambda e: e["candidate"])
+    no_baseline.sort()
 
     if no_baseline:
         print("The following files have no counterpart in the bundled "
@@ -336,8 +371,9 @@ def main():
              "`scan` and `regression`")
     run_parser.add_argument(
         "--directory", "-d", default=".",
-        help="root to scan for service-control-policies/, rcp-policies/, "
-             "and iam-policies/ (default: current directory)")
+        help="root to recursively scan for service-control-policies/, "
+             "rcp-policies/, and iam-policies/ directories at any depth "
+             "(default: current directory)")
     run_parser.add_argument(
         "--diff-base", default=None,
         help="git ref to diff against for the regression tier (e.g. "
@@ -357,8 +393,9 @@ def main():
              "IAM privilege escalation) regardless")
     scan_parser.add_argument(
         "--directory", "-d", default=".",
-        help="root to scan for service-control-policies/, rcp-policies/, "
-             "and iam-policies/ (default: current directory)")
+        help="root to recursively scan for service-control-policies/, "
+             "rcp-policies/, and iam-policies/ directories at any depth "
+             "(default: current directory)")
     _add_common_args(scan_parser)
     scan_parser.set_defaults(func=cmd_scan)
 
