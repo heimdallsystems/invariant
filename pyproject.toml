@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "invariant-sast"
-version = "0.2.0"
+version = "0.3.0"
 description = "SMT-based guardrail SAST for AWS SCP/RCP/IAM JSON (baseline + regression + privilege-escalation checks)"
 readme = "README.md"
 license = "Apache-2.0"
