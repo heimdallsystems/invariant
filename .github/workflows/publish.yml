@@ -9,14 +9,22 @@
 #   Workflow name:        publish.yml
 #   Environment name:    pypi   (must match the `environment:` below)
 #
-# Triggered by publishing a GitHub Release. Tag the release to match the
-# version in pyproject.toml (e.g. tag v0.1.0 for version = "0.1.0").
+# Triggered by publishing a GitHub Release (tag matching the version in
+# pyproject.toml, e.g. tag v0.1.0 for version = "0.1.0") -- for a manual
+# release -- or called directly as a reusable workflow by
+# tag-release.yml, which creates that release automatically on a
+# pyproject.toml version bump. It's invoked directly (`uses:`) rather than
+# left to fire off this workflow's own `release: published` trigger
+# because a release created via the default GITHUB_TOKEN, as
+# tag-release.yml's `gh release create` does, deliberately does not
+# cascade into triggering other workflows.
 
 name: Publish to PyPI
 
 on:
   release:
     types: [published]
+  workflow_call:
 
 jobs:
   build:

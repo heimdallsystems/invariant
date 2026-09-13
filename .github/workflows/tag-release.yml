@@ -1,10 +1,18 @@
-# Auto-tags and releases a version bump landed on main, so publish.yml's
-# `release: published` trigger fires without a manual `git tag` + `gh
-# release create` step every time pyproject.toml's version changes.
+# Auto-tags and releases a version bump landed on main, then publishes it,
+# so a `version = "x.y.z"` edit in pyproject.toml is the only manual step
+# needed to ship a release -- no `git tag` + `gh release create` by hand.
 #
 # Idempotent by construction: it only creates vX.Y.Z when that tag doesn't
 # already exist, so a push to main that touches pyproject.toml but doesn't
 # actually change the version (e.g. a dependency bump) is a no-op here.
+#
+# publish.yml is invoked directly as a reusable workflow (`uses:` below),
+# not left to fire off its own `release: published` trigger -- a release
+# created via the default GITHUB_TOKEN (as gh release create below does)
+# deliberately does NOT cascade into triggering other workflows, to guard
+# against recursive runs. A direct `uses:` call is a job in *this* run, so
+# that restriction doesn't apply and publish.yml still runs when someone
+# publishes a release by hand instead of through this workflow.
 
 name: Tag release on version bump
 
@@ -20,6 +28,8 @@ permissions:
 jobs:
   tag-release:
     runs-on: ubuntu-latest
+    outputs:
+      created: ${{ steps.check.outputs.created }}
     steps:
       - uses: actions/checkout@v4
 
@@ -37,13 +47,13 @@ jobs:
         id: check
         run: |
           if git ls-remote --tags origin "refs/tags/v${{ steps.version.outputs.version }}" | grep -q .; then
-            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "created=false" >> "$GITHUB_OUTPUT"
           else
-            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "created=true" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Create tag + GitHub release
-        if: steps.check.outputs.exists == 'false'
+        if: steps.check.outputs.created == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -52,3 +62,11 @@ jobs:
             --title "v${{ steps.version.outputs.version }}" \
             --generate-notes \
             --target "${{ github.sha }}"
+
+  publish:
+    needs: tag-release
+    if: needs.tag-release.outputs.created == 'true'
+    permissions:
+      id-token: write   # required for publish.yml's Trusted Publishing step
+      contents: read
+    uses: ./.github/workflows/publish.yml
