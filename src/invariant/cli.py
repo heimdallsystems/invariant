@@ -252,6 +252,116 @@ def to_sarif(results, tool_version=None):
     }
 
 
+MAX_MESSAGE_WIDTH = 100
+
+# CRITICAL/HIGH both read as "drop everything", MEDIUM/LOW both read as
+# "worth a look" -- two colors, not four, so severity is visually
+# triageable at a glance instead of needing the text read. 256-color
+# codes (not the basic 8) so "orange" doesn't fall back to yellow.
+_RED = "\033[38;5;196m"
+_ORANGE = "\033[38;5;208m"
+_GREEN = "\033[38;5;40m"
+_RESET = "\033[0m"
+_SEVERITY_COLOR = {
+    Severity.CRITICAL: _RED,
+    Severity.HIGH: _RED,
+    Severity.MEDIUM: _ORANGE,
+    Severity.LOW: _ORANGE,
+}
+
+
+def _use_color() -> bool:
+    # NO_COLOR (https://no-color.org) always wins if set, even non-empty-ly
+    # falsy, matching the convention every other tool honoring it follows.
+    # Otherwise default to on only when stdout is a real terminal, so
+    # piping into a file or CI log-capture doesn't embed raw escape codes
+    # -- CI can still force it with FORCE_COLOR, same convention as npm/etc.
+    if os.environ.get("NO_COLOR") is not None:
+        return False
+    if os.environ.get("FORCE_COLOR"):
+        return True
+    return sys.stdout.isatty()
+
+
+def _colorize(text: str, severity: Severity, passed: bool, color: bool) -> str:
+    if not color:
+        return text
+    code = _GREEN if passed else _SEVERITY_COLOR.get(severity)
+    return f"{code}{text}{_RESET}" if code else text
+
+
+def _status_text(severity: Severity, passed: bool) -> str:
+    # No standalone SEVERITY column: "CRITICAL ... PASS" on one line reads
+    # like an alarm even though the row is fine. Severity only matters once
+    # something has actually failed, so it rides along in parens on the
+    # STATUS cell instead of getting its own always-visible column.
+    if passed:
+        return "PASS"
+    return f"FAIL ({severity.value.upper()})"
+
+
+def _render_table(rows: list[tuple[str, Severity, bool, str, str]],
+                   color: bool = None) -> list[str]:
+    """
+    Checkov/kubectl-style aligned columns: CHECK | STATUS | FILE | MESSAGE.
+    Column widths size to the widest cell actually present (header
+    included) rather than a fixed width, so a short-path repo stays compact
+    and a long one doesn't get silently truncated mid-path.
+
+    rows: (check_id, severity, passed, file_path, message), grouped by the
+    caller so every finding for one check_id sits together -- widths are
+    always computed from the plain text, then color is wrapped around the
+    already-padded cell, so ANSI escapes (zero-width on screen) never throw
+    off alignment the way padding *after* coloring would.
+    """
+    if color is None:
+        color = _use_color()
+
+    headers = ("CHECK", "STATUS", "FILE", "MESSAGE")
+    plain_rows = [
+        (check_id, _status_text(severity, passed), file_path, message)
+        for check_id, severity, passed, file_path, message in rows
+    ]
+    widths = [max(len(r[i]) for r in [headers, *plain_rows])
+              for i in range(len(headers))]
+
+    lines = ["  ".join(h.ljust(w) for h, w in zip(headers, widths)),
+              "  ".join("-" * w for w in widths)]
+    for (check_id, severity, passed, file_path, message), plain in zip(rows, plain_rows):
+        cells = [cell.ljust(w) for cell, w in zip(plain, widths)]
+        cells[1] = _colorize(cells[1], severity, passed, color)  # STATUS
+        lines.append("  ".join(cells))
+    return lines
+
+
+def _truncate(message: str, limit: int = MAX_MESSAGE_WIDTH) -> str:
+    single_line = " ".join(message.split())
+    if len(single_line) <= limit:
+        return single_line
+    return single_line[: limit - 3] + "..."
+
+
+def _print_failure_recap(failed, color: bool = None) -> None:
+    """
+    A real finding is one row among potentially hundreds of PASS rows --
+    easy to scroll past. Repeat every failure, most-severe first, in one
+    block at the very end, since that's the last thing a reader sees before
+    the exit code. Full untruncated message here (the table row may have
+    clipped it).
+    """
+    if not failed:
+        return
+    if color is None:
+        color = _use_color()
+    failed = sorted(failed, key=lambda r: SEVERITY_ORDER.index(r.severity))
+    print()
+    print(f"{len(failed)} check(s) FAILED (most severe first):")
+    for r in failed:
+        tag = _colorize(f"[{r.severity.value.upper()}]", r.severity, False, color)
+        print(f"  {tag} {r.check_id}  {r.file_path}")
+        print(f"      {r.message}")
+
+
 def _add_common_args(parser):
     parser.add_argument("--check", default=None,
                          help="comma-separated check IDs to run (default: all)")
@@ -266,42 +376,44 @@ def _add_common_args(parser):
     parser.add_argument("--out-dir", default="solver-results")
 
 
-def _print_failure_summary(failed) -> None:
-    """
-    A real regression/privilege-escalation finding is one line among
-    potentially hundreds of [OK]/[PASS] lines and (from the Z3 layer)
-    "unhandled condition operator" caveats -- easy to scroll past. Repeat
-    every failure, most-severe first, in one block at the very end, since
-    that's the last thing a reader sees before the exit code.
-    """
-    if not failed:
-        return
-    failed = sorted(failed, key=lambda r: SEVERITY_ORDER.index(r.severity))
-    print()
-    print("=" * 50)
-    print(f"{len(failed)} check(s) FAILED:")
-    for r in failed:
-        print(f"[{r.severity.value.upper()}] {r.check_id}  {r.file_path}")
-        print(f"    {r.message}")
-    print("=" * 50)
-
-
 def _emit_and_exit_code(results, args) -> int:
     outputs = args.output or ["cli"]
     os.makedirs(args.out_dir, exist_ok=True)
     failed = [r for r in results if not isinstance(r, str) and not r.passed]
 
     if "cli" in outputs:
-        for r in results:
-            if isinstance(r, str):
-                print(r)
-                continue
-            if r.passed and args.compact:
-                continue
-            status = "PASS" if r.passed else f"FAIL ({r.severity.value})"
-            print(f"[{status}] {r.check_id}  {r.file_path}  {r.message}")
+        notes = [r for r in results if isinstance(r, str)]
+        check_results = [r for r in results if not isinstance(r, str)]
+        for note in notes:
+            print(note)
 
-        _print_failure_summary(failed)
+        color = _use_color()
+        shown = [r for r in check_results if not (r.passed and args.compact)]
+        if shown:
+            if notes:
+                print()
+            # Grouped by check_id, failures before passes within that
+            # group, then file_path -- so every INV_AWS_003 finding sits
+            # together with the actual failures surfaced first instead of
+            # buried after however many PASS rows that check happened to
+            # produce first. (r.passed sorts False-before-True, i.e.
+            # failures first.)
+            shown = sorted(shown, key=lambda r: (r.check_id, r.passed, r.file_path))
+            rows = [
+                (r.check_id, r.severity, r.passed, r.file_path,
+                 _truncate(r.message))
+                for r in shown
+            ]
+            for line in _render_table(rows, color=color):
+                print(line)
+
+        passed_n = sum(1 for r in check_results if r.passed)
+        skipped_n = len(notes)
+        print()
+        print(f"Summary: {passed_n} passed, {len(failed)} failed, "
+              f"{skipped_n} skipped")
+
+        _print_failure_recap(failed, color=color)
 
     if "json" in outputs:
         path = os.path.join(args.out_dir, "results.json")

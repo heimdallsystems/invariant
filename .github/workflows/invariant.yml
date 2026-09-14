@@ -51,6 +51,11 @@ env:
   # section. Raise this if either job starts timing out once
   # iam-policies/ has real content.
   SOLVER_TIMEOUT_SECONDS: "60"    # per-file hard timeout
+  # `invariant`'s CLI table/summary auto-detects a tty and stays plain
+  # otherwise, since a runner step's stdout is a pipe, not a tty -- force
+  # severity coloring on anyway so the Actions log viewer (which does
+  # render ANSI) shows red/orange/green instead of plain text.
+  FORCE_COLOR: "1"
 
 jobs:
   guardrail-baseline:

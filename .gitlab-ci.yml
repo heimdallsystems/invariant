@@ -42,6 +42,11 @@ variables:
   REFERENCE_DIR: "reference"
   CANDIDATE_DIRS: "service-control-policies rcp-policies iam-policies declarative-policies"
   INVARIANT_PIP_SPEC: "invariant-sast"   # override: private index, package registry, or git+https URL
+  # `invariant`'s CLI table/summary auto-detects a tty and stays plain
+  # otherwise, since a job's stdout is captured, not a tty -- force severity
+  # coloring on anyway so the GitLab job log (which does render ANSI) shows
+  # red/orange/green instead of plain text.
+  FORCE_COLOR: "1"
 
 # --- Tier 1: fast schema/presence checks, no solver -------------------------
 schema:validate:
