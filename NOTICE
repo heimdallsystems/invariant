@@ -1,5 +1,11 @@
 Invariant
-Copyright 2026 Invariant contributors
+Copyright 2026 Heimdall Systems Ltd
 
-This product includes software developed as part of the Invariant project
+This product includes software developed by Heimdall Systems Ltd
 (SMT-based guardrail SAST for AWS SCP/RCP JSON).
+
+This product bundles baseline guardrail policies derived from
+Landing Zone Accelerator on AWS
+(https://github.com/awslabs/landing-zone-accelerator-on-aws),
+Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+Licensed under the Apache License, Version 2.0.
