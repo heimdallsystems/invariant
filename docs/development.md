@@ -1,7 +1,7 @@
 # Development
 
 ```bash
-git clone https://github.com/Ikurira/invariant.git
+git clone https://github.com/heimdallsystems/invariant.git
 cd invariant
 python -m venv .venv
 . .venv/Scripts/activate   # .venv/bin/activate on macOS/Linux
@@ -11,4 +11,4 @@ invariant --help
 
 ## License
 
-Apache-2.0 — see [LICENSE](https://github.com/Ikurira/invariant/blob/main/LICENSE).
+Apache-2.0 — see [LICENSE](https://github.com/heimdallsystems/invariant/blob/main/LICENSE).

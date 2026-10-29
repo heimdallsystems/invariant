@@ -1,8 +1,8 @@
 site_name: Invariant
 site_description: SMT-based guardrail SAST for AWS Service Control Policies (SCPs) and Resource Control Policies (RCPs)
-site_url: https://ikurira.github.io/invariant/
-repo_name: Ikurira/invariant
-repo_url: https://github.com/Ikurira/invariant
+site_url: https://heimdallsystems.github.io/invariant/
+repo_name: heimdallsystems/invariant
+repo_url: https://github.com/heimdallsystems/invariant
 edit_uri: edit/main/docs/
 
 theme:

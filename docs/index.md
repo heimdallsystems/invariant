@@ -39,4 +39,4 @@ Both share the same check registry, output formats, and exit-code
 convention: `0` = no findings (or `--soft-fail`), `1` = a check failed.
 
 [Get started :material-arrow-right:](getting-started.md){ .md-button .md-button--primary }
-[View on GitHub :fontawesome-brands-github:](https://github.com/Ikurira/invariant){ .md-button }
+[View on GitHub :fontawesome-brands-github:](https://github.com/heimdallsystems/invariant){ .md-button }

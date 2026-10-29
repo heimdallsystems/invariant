@@ -4,7 +4,7 @@
 # before the project exists on PyPI,
 # https://pypi.org/manage/account/publishing/):
 #   PyPI project name:  invariant-sast   (import name/CLI command stay `invariant`)
-#   Owner:               Ikurira
+#   Owner:               heimdallsystems
 #   Repository name:     invariant
 #   Workflow name:        publish.yml
 #   Environment name:    pypi   (must match the `environment:` below)

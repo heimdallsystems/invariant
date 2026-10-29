@@ -28,9 +28,9 @@ docs = [
 dev = ["pytest"]
 
 [project.urls]
-Homepage = "https://ikurira.github.io/invariant/"
-Issues = "https://github.com/Ikurira/invariant/issues"
-Repository = "https://github.com/Ikurira/invariant"
+Homepage = "https://heimdallsystems.github.io/invariant/"
+Issues = "https://github.com/heimdallsystems/invariant/issues"
+Repository = "https://github.com/heimdallsystems/invariant"
 
 [project.scripts]
 invariant = "invariant.cli:main"

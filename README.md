@@ -102,7 +102,7 @@ dependency.
 pip install invariant-sast
 
 # or straight from source
-git clone https://github.com/Ikurira/invariant.git
+git clone https://github.com/heimdallsystems/invariant.git
 cd invariant
 pip install .
 ```
