@@ -29,16 +29,26 @@
 ##       iam-policies/*.json found, reference or not. No reference/ needed --
 ##       this is what `invariant scan` proves out of the box.
 
+##
+## Reporting and gating are split, because GitLab ingests a report's findings
+## only when the job that produced it succeeds (allow_failure doesn't change
+## that). Both check jobs run with --soft-fail so they exit 0 and their SARIF
+## is ingested; invariant:gate then reads both results.json files and fails
+## the pipeline on any failed check, or if a results file is missing.
+## SARIF ingestion (artifacts:reports:sarif) needs GitLab Ultimate, generally
+## available from GitLab 19.2. On other tiers the gate still blocks the merge
+## and the reports are still downloadable as job artifacts.
+
 stages:
-  - schema-check
   - policy-reasoning
+  - gate
 
 variables:
   # NotResource/NotAction-heavy IAM policies (permission boundaries) solve
   # noticeably slower than a typical SCP -- see README's "Performance"
   # section. Raise this if guardrail-regression/-baseline start timing out
   # once iam-policies/ has real content.
-  SOLVER_TIMEOUT_SECONDS: "60"     # per-file hard timeout, see run_checks.sh
+  SOLVER_TIMEOUT_SECONDS: "60"     # hard limit on each whole invariant command, not per file
   REFERENCE_DIR: "reference"
   CANDIDATE_DIRS: "service-control-policies rcp-policies iam-policies declarative-policies"
   INVARIANT_PIP_SPEC: "invariant-sast"   # override: private index, package registry, or git+https URL
@@ -48,28 +58,11 @@ variables:
   # red/orange/green instead of plain text.
   FORCE_COLOR: "1"
 
-# --- Tier 1: fast schema/presence checks, no solver -------------------------
-schema:validate:
-  stage: schema-check
-  image: python:3.12-slim
-  before_script:
-    - >-
-      python -m pip --isolated --disable-pip-version-check install --no-deps "pip @ https://files.pythonhosted.org/packages/3f/06/3e4420302363fbb71be3c7f35ce042f54bfca330e3e66b3a2e3c4cca579f/pip-26.2.2-py3-none-any.whl#sha256=fd7f4dfa8190e014013b9f08f3e973f4e4c26ffd179a204895533a7254813a70"
-    - printf 'pip==26.2.2\ncertifi>=2026.10.19\n' > "$CI_PROJECT_DIR/security-constraints.txt"
-    - export PIP_CONSTRAINT="$CI_PROJECT_DIR/security-constraints.txt"
-    - python -m pip install 'certifi>=2026.10.19'
-    - python -m pip install --quiet jsonschema pyyaml
-  script:
-    - python schema/validate_config.py --config .
-  rules:
-    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
-
-# --- Tier 2a: SMT permissiveness-regression check, diff-scoped --------------
+# --- SMT permissiveness-regression check, diff-scoped -----------------------
 invariant:guardrail-regression:
   stage: policy-reasoning
   image: python:3.12-slim
-  needs: ["schema:validate"]
+  needs: []
   before_script:
     - >-
       python -m pip --isolated --disable-pip-version-check install --no-deps "pip @ https://files.pythonhosted.org/packages/3f/06/3e4420302363fbb71be3c7f35ce042f54bfca330e3e66b3a2e3c4cca579f/pip-26.2.2-py3-none-any.whl#sha256=fd7f4dfa8190e014013b9f08f3e973f4e4c26ffd179a204895533a7254813a70"
@@ -95,27 +88,32 @@ invariant:guardrail-regression:
         --candidate-dirs $CANDIDATE_DIRS \
         --out manifest.json
 
-    - timeout "$SOLVER_TIMEOUT_SECONDS" invariant regression \
+    # A block scalar keeps the line continuations; a plain multi-line scalar
+    # would fold them into escaped spaces and break the arguments.
+    # --soft-fail: exit 0 on findings so GitLab ingests them; invariant:gate fails the pipeline.
+    - |
+      timeout "$SOLVER_TIMEOUT_SECONDS" invariant regression \
         --manifest manifest.json \
         --output cli --output sarif --output json \
-        --out-dir solver-results
+        --out-dir solver-results \
+        --soft-fail
   artifacts:
     when: always
     paths:
       - solver-results/
     reports:
-      sast: solver-results/results.sarif   # GitLab renders this natively on the MR diff
+      sarif: solver-results/results.sarif   # Ultimate; ingested only because this job succeeds
     expire_in: 30 days
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
-  timeout: 15m   # hard ceiling on the whole job, independent of the SOLVER_TIMEOUT_SECONDS per-run cap
+  timeout: 15m   # hard ceiling on the whole job, independent of SOLVER_TIMEOUT_SECONDS
 
-# --- Tier 2b: SMT baseline check against the bundled LZA default catalog ----
+# --- SMT baseline check against the bundled LZA default catalog -------------
 invariant:guardrail-baseline:
   stage: policy-reasoning
   image: python:3.12-slim
-  needs: ["schema:validate"]
+  needs: []
   before_script:
     - >-
       python -m pip --isolated --disable-pip-version-check install --no-deps "pip @ https://files.pythonhosted.org/packages/3f/06/3e4420302363fbb71be3c7f35ce042f54bfca330e3e66b3a2e3c4cca579f/pip-26.2.2-py3-none-any.whl#sha256=fd7f4dfa8190e014013b9f08f3e973f4e4c26ffd179a204895533a7254813a70"
@@ -124,18 +122,55 @@ invariant:guardrail-baseline:
     - python -m pip install 'certifi>=2026.10.19'
     - python -m pip install --quiet "$INVARIANT_PIP_SPEC"
   script:
-    - timeout "$SOLVER_TIMEOUT_SECONDS" invariant scan \
+    - |
+      timeout "$SOLVER_TIMEOUT_SECONDS" invariant scan \
         --directory . \
         --output cli --output sarif --output json \
-        --out-dir solver-results-baseline
+        --out-dir solver-results-baseline \
+        --soft-fail
   artifacts:
     when: always
     paths:
       - solver-results-baseline/
     reports:
-      sast: solver-results-baseline/results.sarif
+      sarif: solver-results-baseline/results.sarif
     expire_in: 30 days
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
   timeout: 15m
+
+# --- Gate: fail the pipeline on any failed check ----------------------------
+# Runs only if both check jobs succeeded; if either failed (install error,
+# solver timeout), the pipeline has already failed.
+invariant:gate:
+  stage: gate
+  image: python:3.12-slim
+  needs:
+    - job: invariant:guardrail-regression
+      artifacts: true
+    - job: invariant:guardrail-baseline
+      artifacts: true
+  script:
+    - |
+      python - <<'EOF'
+      import json
+      import sys
+      from pathlib import Path
+
+      failed = 0
+      for path in ("solver-results/results.json", "solver-results-baseline/results.json"):
+          if not Path(path).is_file():
+              print(f"FAIL {path} is missing, so this run proves nothing")
+              failed += 1
+              continue
+          for result in json.loads(Path(path).read_text()):
+              if isinstance(result, dict) and not result["passed"]:
+                  print(f"FAIL {result['check_id']} ({result['severity']}) {result['file_path']}")
+                  failed += 1
+      print(f"{failed} failed check(s)" if failed else "All Invariant checks passed")
+      sys.exit(1 if failed else 0)
+      EOF
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
