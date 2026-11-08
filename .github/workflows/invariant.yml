@@ -130,12 +130,24 @@ jobs:
         run: python -m pip install --quiet "$INVARIANT_PIP_SPEC"
 
       - name: Build manifest.json from the PR diff
+        id: manifest
+        env:
+          EVENT_BEFORE: ${{ github.event.before }}
         run: |
           if [ -n "${GITHUB_BASE_REF:-}" ]; then
             git fetch origin "$GITHUB_BASE_REF" --depth=1
             DIFF_BASE="origin/$GITHUB_BASE_REF"
           else
-            DIFF_BASE="${{ github.event.before }}"
+            DIFF_BASE="$EVENT_BEFORE"
+          fi
+          # A branch's first push has no previous commit: github.event.before
+          # is all zeros. A force push can also name a commit this clone
+          # doesn't have. Either way there's nothing to diff against, so skip
+          # the regression check rather than failing build_manifest.
+          if [ -z "$DIFF_BASE" ] || ! git rev-parse --verify --quiet "$DIFF_BASE^{commit}" > /dev/null; then
+            echo "::notice::No base commit to compare with (${DIFF_BASE:-none}); skipping the regression check."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
           python -m invariant.build_manifest \
             --diff-base "$DIFF_BASE" \
@@ -144,6 +156,7 @@ jobs:
             --out manifest.json
 
       - name: Run regression check
+        if: steps.manifest.outputs.skip != 'true'
         run: |
           timeout "$SOLVER_TIMEOUT_SECONDS" invariant regression \
             --manifest manifest.json \
@@ -151,7 +164,7 @@ jobs:
             --out-dir solver-results
 
       - name: Upload SARIF to code scanning
-        if: always()
+        if: always() && steps.manifest.outputs.skip != 'true'
         # Code scanning is a separate, opt-in repo feature (Advanced
         # Security, paid on a private repo) -- this template shouldn't
         # force that on, so a repo without it enabled still gets a green
@@ -162,7 +175,7 @@ jobs:
           sarif_file: solver-results/results.sarif
 
       - name: Upload results artifact
-        if: always()
+        if: always() && steps.manifest.outputs.skip != 'true'
         uses: actions/upload-artifact@v4
         with:
           name: invariant-regression-results
