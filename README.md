@@ -151,6 +151,13 @@ of real-world `iam-policies/` content, since custom identity policies and
 permission boundaries are org-specific by nature, not part of any shipped
 default catalog.
 
+The bundled catalog (`src/invariant/baseline/`) is an unmodified copy of the
+`service-control-policies/` and `rcp-policies/` files in
+[LZA Universal Configuration](https://github.com/aws/lza-universal-configuration)
+v1.4.0 (`modules/base/default/`, commit `96aa5e7`). A config still on an
+older release gets `INV_AWS_001` findings for denials added since; compare
+it against your own reviewed copies with `invariant regression` instead.
+
 ## CLI reference
 
 All three subcommands accept:

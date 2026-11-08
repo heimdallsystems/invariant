@@ -9,3 +9,10 @@ Landing Zone Accelerator on AWS
 (https://github.com/awslabs/landing-zone-accelerator-on-aws),
 Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 Licensed under the Apache License, Version 2.0.
+
+The files in src/invariant/baseline/ are unmodified copies of
+modules/base/default/service-control-policies/ and rcp-policies/ from
+LZA Universal Configuration v1.4.0
+(https://github.com/aws/lza-universal-configuration, commit
+96aa5e73c5b4f574985a71b195796206cad060ce), Copyright Amazon.com, Inc. or
+its affiliates, licensed under the Apache License, Version 2.0.

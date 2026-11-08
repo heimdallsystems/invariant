@@ -17,7 +17,7 @@ formats (cli/json/sarif), and exit-code convention (0 = no findings or
       directories at any depth (not just as direct children of --directory)
       and reading the JSON files inside them. Files with a same-named
       counterpart in the guardrail catalog bundled with this package
-      (baseline/, copied from the LZA universal-configuration defaults) get
+      (baseline/, copied unmodified from LZA Universal Configuration v1.4.0) get
       the full relative-check treatment (INV_AWS_001/002): Z3 proves the
       candidate still denies/grants exactly what the baseline did. Files
       with no baseline counterpart -- the common case for iam-policies/,
