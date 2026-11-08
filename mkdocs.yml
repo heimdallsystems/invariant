@@ -54,3 +54,5 @@ nav:
   - How the solver works: how-it-works.md
   - CI integration: ci-integration.md
   - Development: development.md
+  - Proposals:
+      - Suppression file: proposals/suppression-file.md
