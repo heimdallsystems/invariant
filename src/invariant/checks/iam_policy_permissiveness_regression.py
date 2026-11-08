@@ -15,7 +15,9 @@ against yet. For absolute, no-reference-needed analysis of a single IAM
 policy, see INV_AWS_003.
 """
 from invariant.checks.base import BaseCheck, CheckResult, Severity, register
-from invariant.policy_check import find_grant_regression, _model_to_jsonable
+from invariant.policy_check import (
+    find_grant_regression, granting_statement_index, _model_to_jsonable,
+)
 from invariant.policy_dirs import IAM_DIR
 
 
@@ -58,4 +60,5 @@ class IamPolicyPermissivenessRegression(BaseCheck):
                 f"{_model_to_jsonable(model)}"
             ),
             counterexample=_model_to_jsonable(model),
+            statement_index=granting_statement_index(candidate, model),
         )

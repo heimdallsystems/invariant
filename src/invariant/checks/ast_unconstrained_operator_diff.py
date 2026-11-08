@@ -65,6 +65,14 @@ class AstUnconstrainedOperatorDiff(BaseCheck):
                 message="No changes to statements using unconstrained "
                         "operators.",
             )
+        # Point the report at the first changed statement still in the
+        # candidate, in document order; None (whole Statement block) if
+        # every flagged statement was removed.
+        cand_statements = candidate.get("Statement", [])
+        if isinstance(cand_statements, dict):
+            cand_statements = [cand_statements]
+        indexes = [i for i, stmt in enumerate(cand_statements)
+                   if any(f["cand_statement"] is stmt for f in findings)]
         sids = ", ".join(f["sid"] for f in findings)
         return CheckResult(
             check_id=self.check_id, passed=False, severity=self.severity,
@@ -74,4 +82,5 @@ class AstUnconstrainedOperatorDiff(BaseCheck):
                 f"can't model changed and need manual review: {sids}"
             ),
             counterexample={"findings": findings},
+            statement_index=indexes[0] if indexes else None,
         )

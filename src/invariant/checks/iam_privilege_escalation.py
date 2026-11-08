@@ -19,7 +19,7 @@ not an assumption that every hit is a bug; INV_AWS_002 is what catches an
 *unintentional* widening of that same policy over time.
 """
 from invariant.checks.base import BaseCheck, CheckResult, Severity, register
-from invariant.policy_check import find_privilege_escalation
+from invariant.policy_check import find_privilege_escalation, granting_statement_index
 from invariant.policy_dirs import IAM_DIR
 
 
@@ -71,4 +71,5 @@ class IamPrivilegeEscalation(BaseCheck):
                 f"unconditionally on at least one resource: {actions}"
             ),
             counterexample=detail,
+            statement_index=granting_statement_index(candidate, findings[0][1]),
         )
