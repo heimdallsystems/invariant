@@ -20,7 +20,7 @@ import sys
 from dataclasses import dataclass
 from z3 import (
     String, Bool, Solver, sat, InRe, Not, Or, And, Implies, Star, Concat, Re,
-    Range, StringVal
+    Range, StringVal, is_true
 )
 
 
@@ -319,6 +319,76 @@ def _model_to_jsonable(m):
     if m is None:
         return None
     return {str(d): str(m[d]) for d in m.decls()}
+
+
+# ---------------------------------------------------------------------------
+# Which statement a counterexample is about (for report locations only)
+#
+# These evaluate single statements' predicates under a model a check has
+# already found. They don't search for anything and never change a check's
+# verdict; the CLI uses the index to point a SARIF result at a source line.
+# RequestContext.fresh() re-creates the same named Z3 constants the finding
+# functions used, so the model's assignments apply to it.
+# ---------------------------------------------------------------------------
+def _statements(policy: dict) -> list:
+    statements = policy.get("Statement", [])
+    return [statements] if isinstance(statements, dict) else list(statements)
+
+
+def _holds(model, predicate) -> bool:
+    if isinstance(predicate, bool):
+        return predicate
+    return is_true(model.eval(predicate, model_completion=True))
+
+
+def statements_matching(policy: dict, model, effect: str) -> list[int]:
+    """
+    Indexes of `policy`'s statements with this Effect ("Deny" or "Allow")
+    that match the request in `model`.
+    """
+    predicate = statement_denies if effect == "Deny" else statement_grants
+    ctx = RequestContext.fresh()
+    return [i for i, stmt in enumerate(_statements(policy))
+            if _holds(model, predicate(stmt, ctx))]
+
+
+def counterpart_index(reference: dict, candidate: dict, ref_index: int):
+    """
+    The candidate statement corresponding to reference statement
+    `ref_index`: the one with the same Sid or, for a statement without a
+    Sid, the candidate statement at the same position if it has no Sid
+    either. None if there isn't one (e.g. the statement was deleted).
+    """
+    ref_statements = _statements(reference)
+    cand_statements = _statements(candidate)
+    sid = ref_statements[ref_index].get("Sid")
+    if sid:
+        for i, stmt in enumerate(cand_statements):
+            if stmt.get("Sid") == sid:
+                return i
+        return None
+    if ref_index < len(cand_statements) and not cand_statements[ref_index].get("Sid"):
+        return ref_index
+    return None
+
+
+def weakened_statement_index(reference: dict, candidate: dict, model):
+    """
+    For an INV_AWS_001 counterexample: the candidate counterpart of the
+    first reference statement that denies the request and still has one.
+    None if every such statement was deleted from the candidate.
+    """
+    for ref_index in statements_matching(reference, model, "Deny"):
+        index = counterpart_index(reference, candidate, ref_index)
+        if index is not None:
+            return index
+    return None
+
+
+def granting_statement_index(policy: dict, model):
+    """For an INV_AWS_002/003 counterexample: the first Allow statement granting it."""
+    matching = statements_matching(policy, model, "Allow")
+    return matching[0] if matching else None
 
 
 # ---------------------------------------------------------------------------

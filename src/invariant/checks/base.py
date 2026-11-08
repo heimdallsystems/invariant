@@ -23,6 +23,11 @@ class CheckResult:
     file_path: str
     message: str
     counterexample: Optional[dict] = field(default=None)
+    # Index into the candidate's Statement list of the statement a failed
+    # result is about, used for the SARIF region. None on a failure means
+    # no single statement applies (e.g. it was deleted), and the report
+    # points at the whole Statement block instead.
+    statement_index: Optional[int] = field(default=None)
 
 
 class BaseCheck:

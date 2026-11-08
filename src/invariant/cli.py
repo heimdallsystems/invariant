@@ -65,6 +65,7 @@ import invariant.checks.iam_privilege_escalation  # noqa: F401
 import invariant.checks.ast_unconstrained_operator_diff  # noqa: F401
 from invariant.build_manifest import build_manifest
 from invariant.checks.base import all_checks, Severity
+from invariant.locate import region_for
 from invariant.policy_dirs import SCANNED_SUBDIRS
 
 
@@ -214,9 +215,17 @@ def run(manifest_entries, only_checks=None, skip_checks=None):
 
 
 def to_sarif(results, tool_version=None):
+    """
+    Minimal SARIF 2.1.0 for GitHub code scanning and GitLab ingestion.
+
+    Each result's region spans the candidate statement the finding is about
+    (CheckResult.statement_index), or the whole Statement block when no
+    single statement applies. GitHub needs a line to tell whether an alert
+    is in code a pull request changed. A file that can't be read back gets
+    a result without a region rather than no result.
+    """
     from invariant import __version__
     tool_version = tool_version or __version__
-    """Minimal SARIF 2.1.0, enough for GitLab's SAST report ingestion."""
     rules = {}
     findings = []
     for r in results:
@@ -227,16 +236,16 @@ def to_sarif(results, tool_version=None):
             "shortDescription": {"text": r.check_id},
         }
         if not r.passed:
+            physical_location = {"artifactLocation": {"uri": r.file_path}}
+            region = region_for(r.file_path, r.statement_index)
+            if region is not None:
+                physical_location["region"] = region
             findings.append({
                 "ruleId": r.check_id,
                 "level": "error" if r.severity in
                          (Severity.CRITICAL, Severity.HIGH) else "warning",
                 "message": {"text": r.message},
-                "locations": [{
-                    "physicalLocation": {
-                        "artifactLocation": {"uri": r.file_path}
-                    }
-                }],
+                "locations": [{"physicalLocation": physical_location}],
             })
     return {
         "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",

@@ -5,7 +5,9 @@ Fails if the candidate policy fails to deny a request that the reference
 policy explicitly denied -- i.e. the guardrail got weaker.
 """
 from invariant.checks.base import BaseCheck, CheckResult, Severity, register
-from invariant.policy_check import find_permissiveness_regression, _model_to_jsonable
+from invariant.policy_check import (
+    find_permissiveness_regression, weakened_statement_index, _model_to_jsonable,
+)
 from invariant.policy_dirs import SCP_DIR, RCP_DIR
 
 
@@ -50,4 +52,5 @@ class ScpPermissivenessRegression(BaseCheck):
                 f"{_model_to_jsonable(model)}"
             ),
             counterexample=_model_to_jsonable(model),
+            statement_index=weakened_statement_index(reference, candidate, model),
         )
